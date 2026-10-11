@@ -12,6 +12,12 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 ---
 
+## v0.4.0 更新
+
+本次增加 ScopeSentry 后台同步历史、逐项失败重试、大批量分页恢复和原始 JSON 来源追踪；任务完成前评估剩余工作，并让 Worker 在限时收尾阶段保存已有结果。同步页和任务页展示对应进度、停止理由与未完成项，同时修复 Windows 证据保存、Python 工具及 Skill 路径兼容问题。
+
+完整功能变化、代码组织调整、验证范围和升级建议见 [v0.4.0 详细更新说明](doc/releases/v0.4.0.md)，历史版本见 [CHANGELOG](CHANGELOG.md)。
+
 ## 截图预览
 
 > 完整交互见[在线 Demo](https://artex-demo.vercel.app/)。
@@ -60,6 +66,8 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 - 在「**资产同步**」页填 ScopeSentry 的地址与 API Key，接入数据源；
 - 按**项目**或**任务**维度选择要同步的目标与资产类型（域名 / 子域 / IP / 端口 / 站点 / 端点…）；
 - 一键导入并按公司资产范围归并，直接进入 ARTEX 的资产图供 agent 探索使用。
+- 后台任务持续运行，离开或刷新页面后可从历史记录查看逐类型进度、失败原因和源记录；支持恢复中断任务及仅重试失败记录。
+- 拉取记录数与独立资产变更分别统计，逐项提供原始 JSON 下载，避免把部分成功误认为全部完成。
 
 ---
 
@@ -98,7 +106,7 @@ shasum -a 256 -c SHA256SUMS  # macOS；需要同一版本的全部五个包
 
 只下载当前平台时，可从清单中取对应的一行执行检查；Windows 可用 `Get-FileHash <程序包.zip> -Algorithm SHA256` 与清单对应值比对。
 
-维护者发布前需在 GitHub 仓库 Secrets 设置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`（对目标仓库有推送权限）。可用仓库 Variable `DOCKERHUB_IMAGE` 覆盖默认镜像仓库。推送 `vX.Y.Z` 或 `vX.Y.Z-rc.1` 标签会触发发布；流程验证测试布局、构建五个平台、校验 zip、推送和检查双架构镜像，再创建 Release。本地可用 `ARTEX_BUILD_VERSION=vX.Y.Z ./build.sh --release` 生成全部程序包及校验清单。
+维护者发布前需在 GitHub 仓库 Secrets 设置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`（对目标仓库有推送权限）。可用仓库 Variable `DOCKERHUB_IMAGE` 覆盖默认镜像仓库。推送 `vX.Y.Z` 或 `vX.Y.Z-rc.1` 标签会触发发布；CHANGELOG 必须包含该版本的非空说明，存在 `doc/releases/vX.Y.Z.md` 时将其用作详细 Release 正文。流程验证测试布局、Linux 数据库竞态回归、Windows 兼容和前端，再构建五个平台、校验 zip、推送和检查双架构镜像，全部通过后创建 Release。本地可用 `ARTEX_BUILD_VERSION=vX.Y.Z ./build.sh --release` 生成全部程序包及校验清单。
 
 ### 方式一：一键安装脚本（推荐）
 

@@ -26,6 +26,7 @@ jobs:
       stable: ${{ steps.version.outputs.stable }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@v7
       - name: Validate release tag
         id: version
         env:
@@ -44,14 +45,36 @@ jobs:
             echo "stable=true" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Validate and prepare version notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "CHANGELOG.md must contain non-empty notes for $VERSION" >&2
+            exit 1
+          fi
+          if [ -f "doc/releases/v${VERSION}.md" ]; then
+            cp "doc/releases/v${VERSION}.md" release-notes.md
+          fi
+          test -s release-notes.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
 
   # Export the frontend once and reuse it for all five cross-compiled binaries.
   frontend:
     needs: [verify, prepare]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -60,7 +83,7 @@ jobs:
         working-directory: web
       - run: npm run build:static
         working-directory: web
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: web/out
@@ -79,14 +102,14 @@ jobs:
           - { goos: darwin, goarch: arm64 }
           - { goos: windows, goarch: amd64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
             norma/go.sum
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: server/webui/dist
@@ -108,13 +131,13 @@ jobs:
       - name: Smoke test Linux amd64 binary
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: dist/artex-linux-amd64/artex -h
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
           path: "dist/*.zip"
           if-no-files-found: error
       - if: matrix.goos == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bin-linux-${{ matrix.goarch }}
           path: dist/artex-linux-${{ matrix.goarch }}/artex
@@ -125,24 +148,24 @@ jobs:
     needs: [binaries, prepare]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: bin-linux-amd64
           path: dist/amd64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bin-linux-arm64
           path: dist/arm64
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@v6
         id: meta
         with:
           images: ${{ env.DOCKERHUB_IMAGE }}
@@ -150,7 +173,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=raw,value=latest,enable=${{ needs.prepare.outputs.stable == 'true' }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         id: build
         with:
           context: .
@@ -190,22 +213,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Read version notes from changelog
-        id: notes
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          awk -v version="$VERSION" '
-            index($0, "## [" version "]") == 1 { found=1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md > release-notes.md
-          # Keep automatic notes for tags with no version section yet.
-          if grep -q '[^[:space:]]' release-notes.md; then
-            echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: .
+      - uses: actions/download-artifact@v8
         with:
           pattern: pkg-*
           merge-multiple: true
@@ -221,9 +234,10 @@ jobs:
           done
           sha256sum *.zip > SHA256SUMS
           sha256sum --check SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
-          body_path: ${{ steps.notes.outputs.path }}
+          name: ARTEX ${{ github.ref_name }}
+          body_path: release-notes.md
           files: |
             dist/*.zip
             dist/SHA256SUMS
