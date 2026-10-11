@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,11 @@ func TestManagerSpawnCompleteNotifies(t *testing.T) {
 	m := newTestManager(t)
 	// Output ("42") deliberately differs from the command text so we can assert the
 	// notification carries the path, not the output.
-	task, err := m.Spawn(SpawnSpec{Command: `expr 6 \* 7`})
+	command := `expr 6 \* 7`
+	if runtime.GOOS == "windows" {
+		command = "6 * 7"
+	}
+	task, err := m.Spawn(SpawnSpec{Command: command})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
