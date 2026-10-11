@@ -6,7 +6,7 @@
 
 ## [0.4.0] - 2026-10-11
 
-本次为功能版本，重点完善资产同步、任务完成校验和 Worker 收尾。详细说明见 [v0.4.0 更新说明](doc/releases/v0.4.0.md)。
+本次为功能版本，重点完善资产同步、任务完成校验和 Worker 收尾。详细说明见 [v0.4.0 Release](https://github.com/sharenjun/ARTEX-main/releases/tag/v0.4.0)。
 
 ### 新增与改进（2026-10-11）
 
@@ -32,7 +32,7 @@
 
 - 新增隔离 PostgreSQL 下的同步历史、分页恢复、失败重试和任务完成竞态回归，以及 Norma 收尾控制和执行权限竞态回归。
 - 新增 Windows 实机 PostgreSQL 证据保存、Python 工具执行和 Skill 路径回归；沿用已有漏洞整理、Skill 元数据和前端测试。
-- 更新构建与发布使用的 Actions 主版本；在构建前验证 CHANGELOG 对应版本说明，并优先使用详细版本文档作为 Release 正文。
+- 更新构建与发布使用的 Actions 主版本；在构建前验证 CHANGELOG 对应版本说明，并用作 Release 正文。`doc/` 与 `docs/` 仅保存在本地，CI 拒绝跟踪这两个目录。
 - 测试通过后构建 Linux/macOS amd64、arm64 和 Windows amd64 五个平台包，校验 SHA256，并发布、验证 Linux 双架构 Docker 镜像。
 
 ### 验证与边界
@@ -70,7 +70,7 @@
 
 - Release 自动附上 CHANGELOG 对应版本的中文说明，并保留 GitHub 自动生成的提交与 PR 链接；提供 Linux/macOS 的 amd64、arm64 包、Windows amd64 包及 SHA256 校验文件。
 - 本地 Agent 离线回归、guard/intercept、工作区边界测试、noa/noaadapter 回归、相关 Go vet、前端 TypeScript 检查及生产构建通过；修复 PR #8 与合并后的主分支 GitHub 检查通过。
-- 本地两个依赖 PostgreSQL 的 Agent 审批集成测试未验证，未执行真实外部模型请求。多漏洞指引不保证模型完全不漏报；学习到的窗口只在当前 noa Session 有效。详细测试范围与平台限制见 `docs/ARTEX-main修复与验证_2026-10-10.md`。
+- 本地两个依赖 PostgreSQL 的 Agent 审批集成测试未验证，未执行真实外部模型请求。多漏洞指引不保证模型完全不漏报；学习到的窗口只在当前 noa Session 有效。
 
 ## [0.3.16] - 2026-10-10
 

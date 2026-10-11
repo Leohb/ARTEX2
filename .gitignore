@@ -24,7 +24,8 @@ web/next-env.d.ts
 *.swp
 *.swo
 
-# docs
+# Local documentation must not be published to the repository.
+/doc/
 /docs/
 
 # os

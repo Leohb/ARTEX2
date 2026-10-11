@@ -58,9 +58,6 @@ jobs:
             echo "CHANGELOG.md must contain non-empty notes for $VERSION" >&2
             exit 1
           fi
-          if [ -f "doc/releases/v${VERSION}.md" ]; then
-            cp "doc/releases/v${VERSION}.md" release-notes.md
-          fi
           test -s release-notes.md
       - uses: actions/upload-artifact@v7
         with:
