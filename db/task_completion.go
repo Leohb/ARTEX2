@@ -39,6 +39,19 @@ type CompletionInput struct {
 	TimedOut        bool                 `json:"timed_out,omitempty"`
 	RecoveryPending bool                 `json:"recovery_pending,omitempty"`
 	RecoveryHistory []CompletionRecovery `json:"recovery_history,omitempty"`
+	GoalGaps        []CompletionGoalGap  `json:"goal_gaps,omitempty"`
+}
+
+type CompletionGoalGap struct {
+	GoalID          int64  `json:"goal_id"`
+	ExpectedVersion int    `json:"expected_version"`
+	Reason          string `json:"reason"`
+}
+
+type CompletionReviewVerdict struct {
+	Complete bool
+	Reason   string
+	GoalGaps []CompletionGoalGap
 }
 
 type TaskCompletion struct {
@@ -113,7 +126,8 @@ SELECT jsonb_build_object(
  'tasks',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',t.id,'goal',t.goal,'description',t.description) ORDER BY t.id)
    FROM tasks t JOIN context_tasks c ON c.task_id=t.id),'[]'::jsonb),
  'nodes',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',n.id,'exploration_id',n.exploration_id,'kind',n.kind,
-   'state',n.state,'payload',n.payload,'content_version',n.content_version) ORDER BY n.id)
+   'state',n.state,'payload',n.payload,'content_version',n.content_version,
+   'proof_review',(SELECT jsonb_build_object('event',a->>'event','reason',a->>'reason','evidence_id',a->'evidence_id','at',a->>'at') FROM jsonb_array_elements(n.goal_audit) WITH ORDINALITY x(a,ord) WHERE a->>'event'='prove' ORDER BY ord DESC LIMIT 1)) ORDER BY n.id)
    FROM exploration_nodes n JOIN context_tasks c ON c.exploration_id=n.exploration_id),'[]'::jsonb),
  'edges',COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.exploration_id,e.src_id,e.dst_id,e.rel)
    FROM exploration_edges e JOIN context_tasks c ON c.exploration_id=e.exploration_id),'[]'::jsonb),
@@ -266,6 +280,7 @@ func (d *DB) BeginTaskCompletion(ctx context.Context, taskID int64, reason strin
 				return err
 			}
 			input.RecoveryHistory = old.RecoveryHistory
+			input.GoalGaps = old.GoalGaps
 		}
 		failureKey, err := completionRetryDigest(input)
 		if err != nil {
@@ -332,6 +347,7 @@ func (d *DB) ReviewTaskCompletion(ctx context.Context, taskID, attemptID int64, 
 		}
 		input.TimedOut = prior.TimedOut
 		input.RecoveryHistory = prior.RecoveryHistory
+		input.GoalGaps = prior.GoalGaps
 		if !input.Eligible && !input.TimedOut {
 			return ErrCompletionChanged
 		}

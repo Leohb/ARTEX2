@@ -405,6 +405,8 @@ export const api = {
     patch<TaskGoal>(`/tasks/${id}/goals/${goalId}`, { text, vulnclass: vulnclass ?? "" }),
   // 人工删除目标（硬删除）：通知 planner，删除不复活任务。
   deleteGoal: (id: string, goalId: string) => del<{ ok: boolean }>(`/tasks/${id}/goals/${goalId}`),
+  reopenGoal: (id: string, goalId: string, expectedVersion: number, reason: string) =>
+    post<TaskGoal>(`/tasks/${id}/goals/${goalId}/reopen`, { expected_version: expectedVersion, reason }),
 
   // ---- 操作约束管理（总览）----
   // 本任务全部操作约束（allow/deny）。

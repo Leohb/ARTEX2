@@ -97,6 +97,19 @@ export function TaskCompletionPanel({ task }: { task: Task }) {
           </ul>
         )}
         {completion.review && <p className="whitespace-pre-wrap break-words">{completion.review}</p>}
+        {!!completion.goal_gaps?.length && (
+          <div className="space-y-1">
+            <p className="font-medium">目标证据缺口</p>
+            <p className="text-muted-foreground text-xs">在目标管理中核对原证明，纠正完成判定并继续必要工作。</p>
+            <ul className="list-inside list-disc space-y-1">
+              {completion.goal_gaps.map((gap) => (
+                <li key={`${gap.goal_id}-${gap.expected_version}`} className="whitespace-pre-wrap break-words">
+                  目标 #{gap.goal_id}：{gap.reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {!!completion.remaining_work?.length && (
           <>
             <p className="font-medium">收官时剩余检查及处置依据</p>

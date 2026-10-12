@@ -199,6 +199,7 @@ ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS delete_reason TEXT;
 -- digest body (summary/state/confidence); cold_since_round stamps the planner round
 -- a node most recently went from "has a live downstream branch" to none (NULL = hot).
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS content_version  INT    NOT NULL DEFAULT 0;
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS goal_audit JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS cold_since_round BIGINT;
 -- ck_node_kind: existing installs predate the 'digest' kind — recreate to allow it.
 DO $$

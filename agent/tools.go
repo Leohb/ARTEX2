@@ -53,6 +53,7 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 // One ToolSet is created per planner/worker run; per-run signals live here.
 type ToolSet struct {
 	findingRecorder FindingRecorder
+	goalReviewer    GoalProofReviewer
 	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
 	cs              *db.CompanyStore // company store (optional)
 	ts              *db.ExplorationStore
@@ -1165,56 +1166,63 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 }
 
 func (t *ToolSet) proveGoal() actool.CoreTool {
-	return t.writeExpTool("prove_goal", "当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。",
+	return t.writeExpTool("prove_goal", "提交本任务目标及证据供独立审核。保存的证据确实支持成果或指定检查时，原子保存理由、证明边并标 met；阴性检查不能证明成果取得。",
 		obj(map[string]any{
 			"goal_id":        idp("目标节点 id"),
 			"evidence_id":    idp("证明它的发现/事实节点 id"),
 			"reason":         str("为什么这个证据满足该目标"),
 			"remaining_work": completionDispositionSchema(),
-		}, "goal_id", "evidence_id"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		}, "goal_id", "evidence_id", "reason"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				GoalID     json.RawMessage            `json:"goal_id"`
 				EvidenceID json.RawMessage            `json:"evidence_id"`
 				Reason     string                     `json:"reason"`
 				Remaining  []db.CompletionDisposition `json:"remaining_work"`
 			}
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("无效参数"), nil
+			}
 			goal, ev := pid(a.GoalID), pid(a.EvidenceID)
-			if goal == 0 || ev == 0 {
-				return actool.Errorf("goal_id 和 evidence_id 必填"), nil
+			if goal == 0 || ev == 0 || strings.TrimSpace(a.Reason) == "" {
+				return actool.Errorf("goal_id、evidence_id 和非空 reason 必填"), nil
 			}
-			goalNode, err := t.ts.GetNode(goal)
-			if err != nil || goalNode == nil || goalNode.Kind != db.KindGoal {
-				return actool.Errorf("goal_id 必须是本任务的目标节点（关联任务目标只读）"), nil
+			if t.goalReviewer == nil {
+				return actool.Errorf("目标证据审核模型尚未就绪，不能标记达成"), nil
 			}
-			evidenceNode, err := t.ts.GetNodeWithSources(ev)
-			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
-				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞节点"), nil
+			snapshot, err := t.ts.GoalProofSnapshot(ctx, goal, ev)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
 			}
-			if err := t.ts.Link(ev, db.RelProves, goal); err != nil {
-				return actool.Errorf(fmt.Sprintf("保存目标证据失败: %v", err)), nil
+			verdict, err := t.goalReviewer(ctx, snapshot, a.Reason)
+			if err != nil {
+				return actool.Errorf("目标证据审核失败，未修改判定: " + err.Error()), nil
 			}
-			if err := t.ts.SetNodeState(goal, "met"); err != nil {
-				return actool.Errorf(fmt.Sprintf("保存目标状态失败: %v", err)), nil
+			if verdict.Supported == nil || strings.TrimSpace(verdict.Reason) == "" || (verdict.GoalType != "outcome" && verdict.GoalType != "inspection") {
+				return actool.Errorf("目标证据审核没有有效结论"), nil
 			}
-			// 每标记一个目标 met，就检查本任务是否【所有目标】都已 met；若是，自动判定
-			// 任务完成（置 GoalMet），无需再依赖模型显式调 goal_met。
-			if goals, err := t.ts.ListByKind(db.KindGoal, 1000); err == nil && len(goals) > 0 {
-				allMet := true
-				for _, g := range goals {
-					if g.State != "met" {
-						allMet = false
-						break
-					}
-				}
-				if allMet {
+			if err = t.ts.CommitGoalProof(ctx, snapshot, *verdict.Supported, t.worker, verdict.Reason); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if !*verdict.Supported {
+				t.completionResultMu.Lock()
+				t.GoalMet = false
+				t.Reason = "目标证据不足，必要工作仍须继续"
+				t.completionResultMu.Unlock()
+				return actool.Errorf("证据不能支持目标达成: " + verdict.Reason + "；目标未被本次审核标为 met，必要工作仍须继续。已有错误 met 可用 reopen_goal 纠正。"), nil
+			}
+			// This is a completion proposal; the independent review commits status.
+			t.completionResultMu.Lock()
+			t.GoalMet = false
+			t.completionResultMu.Unlock()
+			if counts, err := t.ts.GoalStateCounts(ctx); err == nil && counts.Total > 0 {
+				if counts.Total == counts.Met {
 					if t.completionProposal != nil {
 						t.completionProposal.setRemaining(a.Remaining)
 					}
 					t.completionResultMu.Lock()
 					t.GoalMet = true
-					t.Reason = fmt.Sprintf("所有 %d 个目标均已 met（最后由 goal %d 触发）", len(goals), goal)
+					t.Reason = fmt.Sprintf("所有 %d 个目标均已 met（最后由 goal %d 触发）", counts.Total, goal)
 					t.completionResultMu.Unlock()
 					return actool.Text(fmt.Sprintf("goal %d marked met；本任务所有目标均已达成，仍须核验必要检查全部完成；剩余重复/无关意图用 prove_goal.remaining_work 逐项说明停止理由，可对已 met 目标再次调用", goal)), nil
 				}
@@ -2070,7 +2078,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
-		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.listRemainingWork(), t.addIntent(), t.proveGoal(), t.goalMet(),
+		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.listRemainingWork(), t.addIntent(), t.proveGoal(), t.reopenGoal(), t.goalMet(),
 		t.killWorkTool(), t.steerWorkTool(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),

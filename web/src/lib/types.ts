@@ -12,6 +12,7 @@ export interface TaskCompletion {
   deadline_at: string;
   updated_at: string;
   review?: string;
+  goal_gaps?: { goal_id: number; expected_version: number; reason: string }[];
   remaining_work?: {
     intent_id: number;
     state: string;
@@ -480,6 +481,15 @@ export interface TaskGoal {
   state: string; // GoalState
   origin?: string;
   ts: string;
+  content_version?: number;
+  audit?: {
+    at: string;
+    event: "prove" | "reject" | "reopen" | "edit";
+    actor: string;
+    reason: string;
+    previous_state: string;
+    evidence_id?: number;
+  }[];
 }
 
 // 约束管理卡片用的操作约束(allow=允许 / deny=禁止)。

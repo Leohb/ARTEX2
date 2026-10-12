@@ -24,6 +24,7 @@ type TaskCompletionDTO struct {
 	NextRetryAt      *time.Time              `json:"next_retry_at,omitempty"`
 	RecoveryAction   string                  `json:"recovery_action,omitempty"`
 	RecoveryHistory  []db.CompletionRecovery `json:"recovery_history,omitempty"`
+	GoalGaps         []db.CompletionGoalGap  `json:"goal_gaps,omitempty"`
 }
 
 func completionDTO(c *db.TaskCompletion) *TaskCompletionDTO {
@@ -37,6 +38,7 @@ func completionDTO(c *db.TaskCompletion) *TaskCompletionDTO {
 	if json.Unmarshal(c.Snapshot, &snapshot) == nil {
 		out.Review, out.RemainingWork = snapshot.Review, snapshot.Work
 		out.RecoveryHistory = snapshot.RecoveryHistory
+		out.GoalGaps = snapshot.GoalGaps
 	}
 	return out
 }
@@ -56,6 +58,9 @@ func completionReport(c *db.TaskCompletion) string {
 	}
 	if out.Review != "" {
 		fmt.Fprintf(&text, "\n%s\n", out.Review)
+	}
+	for _, gap := range out.GoalGaps {
+		fmt.Fprintf(&text, "- 目标 #%d 证据缺口（版本 %d）：%s\n", gap.GoalID, gap.ExpectedVersion, gap.Reason)
 	}
 	if len(out.RemainingWork) > 0 {
 		text.WriteString("\n### 收官时剩余检查\n\n以下停止决定不代表检查验证通过。\n\n")

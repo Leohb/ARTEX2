@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { GoalCorrection } from "@/components/goal-correction";
 
 import {
   ActivityIcon,
@@ -539,7 +540,10 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 ) : (
                   <div key={g.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
                     <StatusBadge domain="goal" value={g.state} />
-                    <span className="min-w-0 flex-1 break-words">{g.text}</span>
+                    <div className="min-w-0 flex-1 break-words">
+                      <span>{g.text}</span>
+                      <GoalCorrection taskId={taskId} goal={g} onChanged={loadGoals} />
+                    </div>
                     {g.vulnclass && (
                       <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">
                         {g.vulnclass}

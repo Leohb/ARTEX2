@@ -50,7 +50,11 @@ func completionRetryDigest(input CompletionInput) (string, error) {
 	}
 	if nodes, ok := data["nodes"].([]any); ok {
 		for _, raw := range nodes {
-			if n, ok := raw.(map[string]any); ok && n["kind"] == KindIntent {
+			if n, ok := raw.(map[string]any); ok {
+				delete(n, "proof_review") // Audit prose is not new evidence.
+				if n["kind"] != KindIntent {
+					continue
+				}
 				delete(n, "content_version")
 				if n["state"] != "done" {
 					n["state"] = "pending"
@@ -108,7 +112,7 @@ func completionFailureRecovery(kind string, count int, now time.Time, taskID int
 
 // RecordTaskCompletionFailure is a short local transaction. Counters for every
 // failure category survive alternating error types and process restarts.
-func (d *DB) RecordTaskCompletionFailure(ctx context.Context, taskID, attemptID int64, kind, reason string) error {
+func (d *DB) RecordTaskCompletionFailure(ctx context.Context, taskID, attemptID int64, kind, reason string, gaps ...CompletionGoalGap) error {
 	return d.completionTransaction(ctx, taskID, func(tx *sql.Tx) error {
 		c, err := scanCompletion(tx.QueryRowContext(ctx, `SELECT `+completionColumns+` FROM task_completions WHERE task_id=$1 AND attempt_id=$2 AND phase IN ('draining','reviewing','interrupted')`, taskID, attemptID))
 		if err != nil || c == nil {
@@ -119,6 +123,11 @@ func (d *DB) RecordTaskCompletionFailure(ctx context.Context, taskID, attemptID 
 		}
 		var input CompletionInput
 		if err := json.Unmarshal(c.Snapshot, &input); err != nil {
+			return err
+		}
+		input.GoalGaps = append([]CompletionGoalGap(nil), gaps...)
+		snapshot, err := json.Marshal(input)
+		if err != nil {
 			return err
 		}
 		digest, err := completionRetryDigest(input)
@@ -137,7 +146,7 @@ func (d *DB) RecordTaskCompletionFailure(ctx context.Context, taskID, attemptID 
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE task_completions SET failure_kind=$3,failure_count=$4,failure_counts=$5,failure_digest=$6,failure_profile=review_profile,next_retry_at=$7,recovery_action=$8,reason=$9,updated_at=now(),failure_attempt_id=$2 WHERE task_id=$1 AND attempt_id=$2`, taskID, attemptID, kind, counts[kind], string(raw), digest, next, action, reason)
+		_, err = tx.ExecContext(ctx, `UPDATE task_completions SET failure_kind=$3,failure_count=$4,failure_counts=$5,failure_digest=$6,failure_profile=review_profile,next_retry_at=$7,recovery_action=$8,reason=$9,updated_at=now(),failure_attempt_id=$2,snapshot=$10 WHERE task_id=$1 AND attempt_id=$2`, taskID, attemptID, kind, counts[kind], string(raw), digest, next, action, reason, string(snapshot))
 		return err
 	})
 }

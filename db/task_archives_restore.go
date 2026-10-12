@@ -368,7 +368,7 @@ func rowExists(tx *sql.Tx, table string, id int64) bool {
 func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 	// json_populate_recordset inserts NULL for absent columns, bypassing SQL
 	// defaults. Preserve compatibility with v3 archives predating side memory.
-	if (table == "side_question_sessions" || table == "side_question_requests") && len(raw) > 0 {
+	if (table == "side_question_sessions" || table == "side_question_requests" || table == "exploration_nodes") && len(raw) > 0 {
 		var rows []map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &rows); err != nil {
 			return err
@@ -377,9 +377,14 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 		if table == "side_question_requests" {
 			field = "context_info"
 		}
+		fallback := json.RawMessage(`{}`)
+		if table == "exploration_nodes" {
+			field = "goal_audit"
+			fallback = json.RawMessage(`[]`)
+		}
 		for _, row := range rows {
 			if len(row[field]) == 0 || string(row[field]) == "null" {
-				row[field] = json.RawMessage(`{}`)
+				row[field] = fallback
 			}
 		}
 		var err error

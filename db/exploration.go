@@ -65,22 +65,24 @@ func jsonbClean(b []byte) []byte {
 
 // Node is a typed reasoning node (= old task_nodes). kind ∈ goal|intent|finding|hint.
 type Node struct {
-	FindingID     int64           `json:"finding_id,omitempty"` // populated by finding-aware reads; never inferred from ID
-	FindingNodeID int64           `json:"finding_node_id,omitempty"`
-	TrafficCount  int             `json:"traffic_count,omitempty"`
-	ID            int64           `json:"id"`
-	Kind          string          `json:"kind"`
-	Payload       json.RawMessage `json:"payload"`
-	Priority      int             `json:"priority"`
-	State         string          `json:"state"`
-	Origin        string          `json:"origin,omitempty"`
-	Owner         string          `json:"owner,omitempty"`
-	BlockedReason string          `json:"blocked_reason,omitempty"`
-	DeleteReason  string          `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
-	Anchors       []int64         `json:"anchors,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	SourceTaskID  int64           `json:"source_task_id,omitempty"`
-	Inherited     bool            `json:"inherited,omitempty"`
+	FindingID      int64           `json:"finding_id,omitempty"` // populated by finding-aware reads; never inferred from ID
+	FindingNodeID  int64           `json:"finding_node_id,omitempty"`
+	TrafficCount   int             `json:"traffic_count,omitempty"`
+	ID             int64           `json:"id"`
+	Kind           string          `json:"kind"`
+	Payload        json.RawMessage `json:"payload"`
+	Priority       int             `json:"priority"`
+	State          string          `json:"state"`
+	Origin         string          `json:"origin,omitempty"`
+	Owner          string          `json:"owner,omitempty"`
+	BlockedReason  string          `json:"blocked_reason,omitempty"`
+	DeleteReason   string          `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
+	Anchors        []int64         `json:"anchors,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	SourceTaskID   int64           `json:"source_task_id,omitempty"`
+	Inherited      bool            `json:"inherited,omitempty"`
+	ContentVersion int             `json:"content_version"`
+	GoalAudit      json.RawMessage `json:"goal_audit,omitempty"`
 }
 
 // Activity is one worker execution step (= old task_activity).
@@ -274,19 +276,7 @@ func (s *ExplorationStore) SetNodeState(id int64, state string) error {
 // scoped to kind='goal' so it can never mutate an intent/fact by id. Returns an
 // error if no such goal exists in this exploration.
 func (s *ExplorationStore) UpdateGoalPayload(id int64, text, vulnclass string) error {
-	payload := map[string]any{"text": text}
-	if vulnclass != "" {
-		payload["vulnclass"] = vulnclass
-	}
-	raw, _ := json.Marshal(payload)
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET payload=$1 WHERE id=$2 AND exploration_id=$3 AND kind='goal'`, string(raw), id, s.expID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("目标不存在")
-	}
-	return nil
+	return s.editGoalPayload(id, text, vulnclass)
 }
 
 // DeleteGoal hard-deletes a goal node; scoped to kind='goal' so it can never drop
@@ -698,12 +688,12 @@ func (u *TokenUsage) add(other TokenUsage) {
 	u.CacheWriteTokens += other.CacheWriteTokens
 }
 
-const nodeCols = `id, kind, payload, priority, state, COALESCE(origin,''), COALESCE(owner,''), COALESCE(blocked_reason,''), COALESCE(delete_reason,''), created_at`
+const nodeCols = `id, kind, payload, priority, state, COALESCE(origin,''), COALESCE(owner,''), COALESCE(blocked_reason,''), COALESCE(delete_reason,''), created_at, content_version, goal_audit`
 
 func scanNode(sc interface{ Scan(...any) error }) (*Node, error) {
 	var n Node
 	var payload []byte
-	if err := sc.Scan(&n.ID, &n.Kind, &payload, &n.Priority, &n.State, &n.Origin, &n.Owner, &n.BlockedReason, &n.DeleteReason, &n.CreatedAt); err != nil {
+	if err := sc.Scan(&n.ID, &n.Kind, &payload, &n.Priority, &n.State, &n.Origin, &n.Owner, &n.BlockedReason, &n.DeleteReason, &n.CreatedAt, &n.ContentVersion, &n.GoalAudit); err != nil {
 		return nil, err
 	}
 	n.Payload = json.RawMessage(payload)

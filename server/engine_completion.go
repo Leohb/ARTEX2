@@ -97,6 +97,7 @@ func (e *Engine) completeTask(ctx context.Context, t *Task, run *completionRun) 
 	committed, forced, joined := false, false, false
 	reason := "收官被取消，保留证据并重新复核"
 	failureKind := ""
+	var goalGaps []db.CompletionGoalGap
 	defer func() {
 		defer e.decInflight(t.ID)
 		run.cancel()
@@ -109,7 +110,7 @@ func (e *Engine) completeTask(ctx context.Context, t *Task, run *completionRun) 
 				recoverCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 				var err error
 				if !failureSaved {
-					err = e.m.pg.RecordTaskCompletionFailure(recoverCtx, run.attempt.TaskID, run.attempt.AttemptID, failureKind, reason)
+					err = e.m.pg.RecordTaskCompletionFailure(recoverCtx, run.attempt.TaskID, run.attempt.AttemptID, failureKind, reason, goalGaps...)
 					failureSaved = err == nil
 				}
 				if err == nil {
@@ -243,7 +244,9 @@ func (e *Engine) completeTask(ctx context.Context, t *Task, run *completionRun) 
 	} else {
 		e.emitActivity(t, db.Activity{Worker: "planner", Kind: "round", Summary: fmt.Sprintf("收官只读终验（第 %d 轮）", e.nextPlannerRound(t.ID))})
 		e.BeginLLMCall(t.ID)
-		met, reason, err = planner.ReviewCompletion(reviewCtx, run.attempt.TaskID, t.Store, current.Snapshot, func(a db.Activity) { e.emitActivity(t, a) })
+		var verdict db.CompletionReviewVerdict
+		verdict, err = planner.ReviewCompletionVerdict(reviewCtx, run.attempt.TaskID, t.Store, current.Snapshot, func(a db.Activity) { e.emitActivity(t, a) })
+		met, reason, goalGaps = verdict.Complete, verdict.Reason, verdict.GoalGaps
 		e.EndLLMCall(t.ID)
 		if err != nil {
 			met = false

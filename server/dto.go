@@ -213,27 +213,33 @@ func taskNodeDTO(n *db.Node) TaskNodeDTO {
 // GoalDTO is a goal node with its payload unpacked into text/vulnclass — the shape
 // the 总览「目标管理」UI works with (vs TaskNodeDTO which carries raw payload JSON).
 type GoalDTO struct {
-	ID        string `json:"id"`
-	Text      string `json:"text"`
-	VulnClass string `json:"vulnclass,omitempty"`
-	State     string `json:"state"`
-	Origin    string `json:"origin,omitempty"`
-	TS        string `json:"ts"`
+	ID             string         `json:"id"`
+	Text           string         `json:"text"`
+	VulnClass      string         `json:"vulnclass,omitempty"`
+	State          string         `json:"state"`
+	Origin         string         `json:"origin,omitempty"`
+	TS             string         `json:"ts"`
+	ContentVersion int            `json:"content_version"`
+	Audit          []db.GoalAudit `json:"audit,omitempty"`
 }
 
 func goalDTO(n *db.Node) GoalDTO {
+	var audit []db.GoalAudit
+	_ = json.Unmarshal(n.GoalAudit, &audit)
 	var p struct {
 		Text      string `json:"text"`
 		VulnClass string `json:"vulnclass"`
 	}
 	_ = json.Unmarshal(n.Payload, &p)
 	return GoalDTO{
-		ID:        i64s(n.ID),
-		Text:      p.Text,
-		VulnClass: p.VulnClass,
-		State:     n.State,
-		Origin:    n.Origin,
-		TS:        rfc3339(n.CreatedAt),
+		ID:             i64s(n.ID),
+		Text:           p.Text,
+		VulnClass:      p.VulnClass,
+		State:          n.State,
+		Origin:         n.Origin,
+		TS:             rfc3339(n.CreatedAt),
+		ContentVersion: n.ContentVersion,
+		Audit:          audit,
 	}
 }
 

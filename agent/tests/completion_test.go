@@ -51,6 +51,36 @@ func completionReviewFixture() json.RawMessage {
 	return json.RawMessage(`{"goals_met":true,"eligible":true,"remaining_work":[],"data":{"tasks":[{"id":1,"goal":"original goal","description":"original description"}],"nodes":[],"edges":[],"constraints":[]}}`)
 }
 
+func TestReviewCompletionGoalGapsRequireSnapshotAuthority(t *testing.T) {
+	snapshot := json.RawMessage(`{"goals_met":true,"eligible":true,"remaining_work":[],"data":{"tasks":[{"id":1,"goal":"obtain flag","description":"saved work"}],"nodes":[{"id":4,"exploration_id":7,"kind":"goal","state":"met","content_version":2,"payload":{"text":"obtain flag"}},{"id":8,"exploration_id":99,"kind":"goal","state":"met","content_version":2,"payload":{"text":"foreign goal"}}],"edges":[],"constraints":[]}}`)
+	for _, tc := range []struct {
+		name, input string
+		valid       bool
+	}{
+		{"local", `{"complete":false,"reason":"flag absent","goal_gaps":[{"goal_id":4,"expected_version":2,"reason":"no saved flag"}]}`, true},
+		{"foreign", `{"complete":false,"reason":"flag absent","goal_gaps":[{"goal_id":8,"expected_version":2,"reason":"foreign"}]}`, false},
+		{"stale", `{"complete":false,"reason":"flag absent","goal_gaps":[{"goal_id":4,"expected_version":1,"reason":"old version"}]}`, false},
+		{"blank", `{"complete":false,"reason":"flag absent","goal_gaps":[{"goal_id":4,"expected_version":2,"reason":" "}]}`, false},
+		{"contradictory", `{"complete":true,"reason":"all met","goal_gaps":[{"goal_id":4,"expected_version":2,"reason":"no flag"}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turns := 0
+			provider := completionReviewProvider{stream: func(_ context.Context, _ llm.CompletionRequest, yield func(llm.StreamEvent, error) bool) {
+				turns++
+				if turns == 1 {
+					completionReviewEvents(yield, llm.StreamEvent{Type: llm.SEToolUseStart, ToolID: "v", ToolName: "completion_verdict"}, llm.StreamEvent{Type: llm.SEToolInputJSON, Text: tc.input}, llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "tool_use"})
+					return
+				}
+				completionReviewEvents(yield, llm.StreamEvent{Type: llm.SETextDelta, Text: "finished"}, llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "end_turn"})
+			}}
+			out, err := NewPlanner(provider, "", "", nil, 0, 0).ReviewCompletionVerdict(t.Context(), 1, new(db.DB).Exploration(7), snapshot, nil)
+			if err != nil || out.Complete || (len(out.GoalGaps) == 1) != tc.valid {
+				t.Fatalf("invalid verdict: %+v err=%v", out, err)
+			}
+		})
+	}
+}
+
 func TestReviewCompletionUsesReadOnlyToolsAndFreshController(t *testing.T) {
 	for _, nonStreaming := range []bool{false, true} {
 		name := "streaming"
