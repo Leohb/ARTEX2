@@ -255,6 +255,11 @@ export const api = {
   tasks: () =>
     get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
+  retryTaskCompletion: (id: string, attemptId: number, reason: string) =>
+    post<{ requested: boolean }>(`/tasks/${encodeURIComponent(id)}/completion/retry`, {
+      attempt_id: attemptId,
+      reason,
+    }),
   createTask: (input: {
     name?: string;
     categoryId?: number;

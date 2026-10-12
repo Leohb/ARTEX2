@@ -31,32 +31,43 @@ type CompletionWork struct {
 }
 
 type CompletionInput struct {
-	Work            []CompletionWork `json:"remaining_work"`
-	GoalsMet        bool             `json:"goals_met"`
-	Eligible        bool             `json:"eligible"`
-	Data            json.RawMessage  `json:"data"`
-	Review          string           `json:"review,omitempty"`
-	TimedOut        bool             `json:"timed_out,omitempty"`
-	RecoveryPending bool             `json:"recovery_pending,omitempty"`
+	Work            []CompletionWork     `json:"remaining_work"`
+	GoalsMet        bool                 `json:"goals_met"`
+	Eligible        bool                 `json:"eligible"`
+	Data            json.RawMessage      `json:"data"`
+	Review          string               `json:"review,omitempty"`
+	TimedOut        bool                 `json:"timed_out,omitempty"`
+	RecoveryPending bool                 `json:"recovery_pending,omitempty"`
+	RecoveryHistory []CompletionRecovery `json:"recovery_history,omitempty"`
 }
 
 type TaskCompletion struct {
-	TaskID      int64           `json:"task_id"`
-	AttemptID   int64           `json:"attempt_id"`
-	Phase       string          `json:"phase"`
-	Reason      string          `json:"reason"`
-	Snapshot    json.RawMessage `json:"snapshot"`
-	InputDigest string          `json:"input_digest"`
-	StartedAt   time.Time       `json:"started_at"`
-	DeadlineAt  time.Time       `json:"deadline_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	TaskID           int64           `json:"task_id"`
+	AttemptID        int64           `json:"attempt_id"`
+	Phase            string          `json:"phase"`
+	Reason           string          `json:"reason"`
+	Snapshot         json.RawMessage `json:"snapshot"`
+	InputDigest      string          `json:"input_digest"`
+	StartedAt        time.Time       `json:"started_at"`
+	DeadlineAt       time.Time       `json:"deadline_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+	ReviewDeadlineAt *time.Time      `json:"review_deadline_at,omitempty"`
+	ReviewProfile    string          `json:"review_profile"`
+	FailureKind      string          `json:"failure_kind"`
+	FailureCount     int             `json:"failure_count"`
+	FailureAttemptID int64           `json:"failure_attempt_id"`
+	FailureCounts    json.RawMessage `json:"failure_counts"`
+	FailureDigest    string          `json:"failure_digest"`
+	FailureProfile   string          `json:"failure_profile"`
+	NextRetryAt      *time.Time      `json:"next_retry_at,omitempty"`
+	RecoveryAction   string          `json:"recovery_action"`
 }
 
-const completionColumns = `task_id,attempt_id,phase,reason,snapshot,input_digest,started_at,deadline_at,updated_at`
+const completionColumns = `task_id,attempt_id,phase,reason,snapshot,input_digest,started_at,deadline_at,updated_at,review_deadline_at,review_profile,failure_kind,failure_count,failure_counts,failure_digest,failure_profile,next_retry_at,recovery_action,failure_attempt_id`
 
 func scanCompletion(row interface{ Scan(...any) error }) (*TaskCompletion, error) {
 	c := new(TaskCompletion)
-	err := row.Scan(&c.TaskID, &c.AttemptID, &c.Phase, &c.Reason, &c.Snapshot, &c.InputDigest, &c.StartedAt, &c.DeadlineAt, &c.UpdatedAt)
+	err := row.Scan(&c.TaskID, &c.AttemptID, &c.Phase, &c.Reason, &c.Snapshot, &c.InputDigest, &c.StartedAt, &c.DeadlineAt, &c.UpdatedAt, &c.ReviewDeadlineAt, &c.ReviewProfile, &c.FailureKind, &c.FailureCount, &c.FailureCounts, &c.FailureDigest, &c.FailureProfile, &c.NextRetryAt, &c.RecoveryAction, &c.FailureAttemptID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -205,7 +216,11 @@ func completionDispositions(input CompletionInput) []CompletionDisposition {
 
 // BeginTaskCompletion validates all remaining work before installing the durable
 // barrier. Timeout attempts retain unfinished work instead of claiming success.
-func (d *DB) BeginTaskCompletion(ctx context.Context, taskID int64, reason string, dispositions []CompletionDisposition, deadline time.Time, timedOut bool) (*TaskCompletion, error) {
+func (d *DB) BeginTaskCompletion(ctx context.Context, taskID int64, reason string, dispositions []CompletionDisposition, deadline time.Time, timedOut bool, profiles ...string) (*TaskCompletion, error) {
+	profile := ""
+	if len(profiles) > 0 {
+		profile = profiles[0]
+	}
 	var result *TaskCompletion
 	err := d.completionTransaction(ctx, taskID, func(tx *sql.Tx) error {
 		var status string
@@ -245,15 +260,37 @@ func (d *DB) BeginTaskCompletion(ctx context.Context, taskID int64, reason strin
 			return fmt.Errorf("completion rejected: goals_met=%t; %d unfinished intents require explicit stop decisions", input.GoalsMet, len(input.Work))
 		}
 		input.TimedOut = timedOut
+		if previous != nil {
+			var old CompletionInput
+			if err := json.Unmarshal(previous.Snapshot, &old); err != nil {
+				return err
+			}
+			input.RecoveryHistory = old.RecoveryHistory
+		}
+		failureKey, err := completionRetryDigest(input)
+		if err != nil {
+			return err
+		}
+		keepFailure := previous != nil && previous.FailureDigest == failureKey && previous.FailureProfile == profile
+		if !timedOut && keepFailure && previous.FailureCount > 0 {
+			if previous.NextRetryAt == nil || time.Now().Before(*previous.NextRetryAt) {
+				return &CompletionRetryError{Kind: previous.FailureKind, Count: previous.FailureCount, Next: previous.NextRetryAt, Action: previous.RecoveryAction}
+			}
+		}
+		failure := TaskCompletion{FailureCounts: json.RawMessage(`{}`)}
+		if keepFailure {
+			failure = *previous
+		}
 		raw, err := json.Marshal(input)
 		if err != nil {
 			return err
 		}
-		result, err = scanCompletion(tx.QueryRowContext(ctx, `INSERT INTO task_completions(task_id,phase,reason,snapshot,input_digest,deadline_at)
-		 VALUES($1,'draining',$2,$3,$4,$5) ON CONFLICT(task_id) DO UPDATE SET attempt_id=task_completions.attempt_id+1,
+		result, err = scanCompletion(tx.QueryRowContext(ctx, `INSERT INTO task_completions(task_id,phase,reason,snapshot,input_digest,deadline_at,review_profile)
+		 VALUES($1,'draining',$2,$3,$4,$5,$6) ON CONFLICT(task_id) DO UPDATE SET attempt_id=task_completions.attempt_id+1,
 		 phase='draining',reason=EXCLUDED.reason,snapshot=EXCLUDED.snapshot,input_digest=EXCLUDED.input_digest,
-		 started_at=now(),deadline_at=EXCLUDED.deadline_at,updated_at=now() RETURNING `+completionColumns,
-			taskID, reason, string(raw), digest, deadline))
+		 started_at=now(),deadline_at=EXCLUDED.deadline_at,updated_at=now(),review_deadline_at=NULL,review_profile=EXCLUDED.review_profile,
+		 failure_kind=$7,failure_count=$8,failure_counts=$9,failure_digest=$10,failure_profile=$11,next_retry_at=NULL,recovery_action='' RETURNING `+completionColumns,
+			taskID, reason, string(raw), digest, deadline, profile, failure.FailureKind, failure.FailureCount, string(failure.FailureCounts), failure.FailureDigest, failure.FailureProfile))
 		return err
 	})
 	return result, err
@@ -261,7 +298,24 @@ func (d *DB) BeginTaskCompletion(ctx context.Context, taskID int64, reason strin
 
 // ReviewTaskCompletion refreshes worker results only after the caller has joined
 // all executions. Newly added goals/work must pass the same eligibility check.
-func (d *DB) ReviewTaskCompletion(ctx context.Context, taskID, attemptID int64) (*TaskCompletion, error) {
+type CompletionReviewPolicy struct {
+	Budget  time.Duration
+	Profile string
+}
+
+func (d *DB) ReviewTaskCompletion(ctx context.Context, taskID, attemptID int64, policies ...CompletionReviewPolicy) (*TaskCompletion, error) {
+	budget := 180 * time.Second
+	var profile *string
+	if len(policies) > 0 {
+		if policies[0].Budget > 0 {
+			budget = policies[0].Budget
+		}
+		profile = &policies[0].Profile
+	}
+	deadline := time.Now().Add(budget)
+	if parent, ok := ctx.Deadline(); ok && parent.Before(deadline) {
+		deadline = parent
+	}
 	var result *TaskCompletion
 	err := d.completionTransaction(ctx, taskID, func(tx *sql.Tx) error {
 		current, err := scanCompletion(tx.QueryRowContext(ctx, `SELECT `+completionColumns+` FROM task_completions WHERE task_id=$1 AND attempt_id=$2 AND phase='draining'`, taskID, attemptID))
@@ -277,6 +331,7 @@ func (d *DB) ReviewTaskCompletion(ctx context.Context, taskID, attemptID int64) 
 			return err
 		}
 		input.TimedOut = prior.TimedOut
+		input.RecoveryHistory = prior.RecoveryHistory
 		if !input.Eligible && !input.TimedOut {
 			return ErrCompletionChanged
 		}
@@ -294,8 +349,8 @@ func (d *DB) ReviewTaskCompletion(ctx context.Context, taskID, attemptID int64) 
 			}
 		}
 		raw, _ := json.Marshal(input)
-		result, err = scanCompletion(tx.QueryRowContext(ctx, `UPDATE task_completions SET phase='reviewing',snapshot=$3,input_digest=$4,updated_at=now()
-		 WHERE task_id=$1 AND attempt_id=$2 RETURNING `+completionColumns, taskID, attemptID, string(raw), digest))
+		result, err = scanCompletion(tx.QueryRowContext(ctx, `UPDATE task_completions SET phase='reviewing',snapshot=$3,input_digest=$4,updated_at=now(),review_deadline_at=$5,review_profile=COALESCE($6,review_profile)
+		 WHERE task_id=$1 AND attempt_id=$2 RETURNING `+completionColumns, taskID, attemptID, string(raw), digest, deadline, profile))
 		return err
 	})
 	return result, err
@@ -311,6 +366,9 @@ func (d *DB) FinishTaskCompletion(ctx context.Context, taskID, attemptID int64, 
 		current, err := scanCompletion(tx.QueryRowContext(ctx, `SELECT `+completionColumns+` FROM task_completions WHERE task_id=$1 AND attempt_id=$2 AND phase='reviewing'`, taskID, attemptID))
 		if err != nil || current == nil || current.InputDigest != digest {
 			return errors.Join(err, ErrCompletionChanged)
+		}
+		if current.ReviewDeadlineAt != nil && !time.Now().Before(*current.ReviewDeadlineAt) {
+			return ErrCompletionChanged
 		}
 		var prior CompletionInput
 		if err := json.Unmarshal(current.Snapshot, &prior); err != nil {

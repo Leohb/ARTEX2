@@ -1555,3 +1555,14 @@ CREATE TABLE IF NOT EXISTS task_completions (
     deadline_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS review_deadline_at TIMESTAMPTZ;
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS review_profile TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_attempt_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_counts JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_digest TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_profile TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS recovery_action TEXT NOT NULL DEFAULT '';

@@ -838,6 +838,8 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	// 触发第一轮规划。之后每次唤醒(边沿/心跳)都重臂 = 距上次任意规划触发的时长。
 	heartbeat := time.NewTimer(interval)
 	defer heartbeat.Stop()
+	retryTicker := time.NewTicker(2 * time.Second)
+	defer retryTicker.Stop()
 
 	// runRound 跑一轮规划(含 debounce 合并 + 各 guard)。src 仅用于日志区分触发来源。
 	runRound := func(src string) {
@@ -879,6 +881,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			if err := e.requestCompletion(ctx, t, "所有工作已退出，申请终验", nil, false); err == nil {
 				t.drainTriggers()
 				return
+			} else {
+				var limited *db.CompletionRetryError
+				if errors.As(err, &limited) {
+					return
+				}
 			}
 		} else if goals, err := t.Store.ListByKind(db.KindGoal, 1); !needsReplan && err == nil && len(goals) == 0 {
 			// A human may inject work without goals. Let that work execute before
@@ -939,6 +946,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		case <-heartbeat.C:
 			// 周期兜底:死锁兜底 + 唤醒去监督飞行中的 worker(steer/kill) + 周期复查。
 			runRound("heartbeat")
+		case <-retryTicker.C:
+			e.retryCompletion(ctx, t)
+			continue
 		}
 		// 每次唤醒(边沿或心跳)后重臂心跳:任意规划触发都重算这段静置计时。
 		resetPlannerTimer(heartbeat, interval)

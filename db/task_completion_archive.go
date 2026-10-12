@@ -47,8 +47,14 @@ func restoreTaskCompletion(tx *sql.Tx, taskID int64, raw json.RawMessage) error 
 	if len(c.Snapshot) == 0 {
 		c.Snapshot = json.RawMessage(`{}`)
 	}
-	_, err := tx.Exec(`INSERT INTO task_completions(task_id,attempt_id,phase,reason,snapshot,input_digest,started_at,deadline_at,updated_at)
-	 VALUES($1,$2,$3,$4,$5,'',$6,$7,now())`, taskID, c.AttemptID+1, c.Phase, c.Reason,
-		string(c.Snapshot), c.StartedAt, c.DeadlineAt)
+	if len(c.FailureCounts) == 0 {
+		c.FailureCounts = json.RawMessage(`{}`)
+	}
+	if c.FailureCount < 0 {
+		return fmt.Errorf("restore task completion: invalid failure count")
+	}
+	_, err := tx.Exec(`INSERT INTO task_completions(task_id,attempt_id,phase,reason,snapshot,input_digest,started_at,deadline_at,updated_at,review_deadline_at,review_profile,failure_kind,failure_count,failure_counts,failure_digest,failure_profile,next_retry_at,recovery_action,failure_attempt_id)
+	 VALUES($1,$2,$3,$4,$5,'',$6,$7,now(),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, taskID, c.AttemptID+1, c.Phase, c.Reason,
+		string(c.Snapshot), c.StartedAt, c.DeadlineAt, c.ReviewDeadlineAt, c.ReviewProfile, c.FailureKind, c.FailureCount, string(c.FailureCounts), c.FailureDigest, c.FailureProfile, c.NextRetryAt, c.RecoveryAction, c.FailureAttemptID)
 	return err
 }

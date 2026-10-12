@@ -20,6 +20,12 @@ export interface TaskCompletion {
     reason?: string;
     reference_id?: number;
   }[];
+  review_deadline_at?: string;
+  failure_kind?: string;
+  failure_count?: number;
+  next_retry_at?: string;
+  recovery_action?: string;
+  recovery_history?: { at: string; actor: string; reason: string; failure_kind: string; failure_count: number }[];
 }
 
 export interface Task {
@@ -931,6 +937,8 @@ export interface TrafficHost {
 
 // ---- App settings (runtime toggles) ----
 export interface Settings {
+  completion_review_seconds?: number;
+  completion_review_turns?: number;
   traffic_capture: boolean;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
   llm_record: boolean; // LLM 录制开关（默认关）；关闭时不记录任何 LLM 调用

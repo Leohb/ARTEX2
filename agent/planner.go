@@ -39,6 +39,8 @@ type Planner struct {
 	noaEnabledFn      func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn       func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor         *Compactor                             // cold-node compaction (§7); nil = disabled
+	reviewOptionsFn   func() ReviewOptions
+	reviewSignatureFn func() string
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
