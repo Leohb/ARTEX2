@@ -57,10 +57,30 @@ func (p *anthropicProvider) buildBody(req CompletionRequest, stream bool) ([]byt
 		return nil, err
 	}
 	msgs := req.Messages
+	if len(req.OriginalMessages) > 0 {
+		original := req.OriginalMessages
+		if i := LastBoundaryIndex(original); i >= 0 {
+			original = original[i+1:]
+		}
+		for i, m := range original {
+			if m.Replay != nil && m.Replay.Incomplete {
+				return nil, &HistoryError{Reason: "incomplete model response", MessageIndex: i, Recoverable: true}
+			}
+		}
+		if req.ValidateOriginalHistory && LastBoundaryIndex(req.OriginalMessages) < 0 {
+			if err := validateAnthropicHistory(original, ""); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if thinkingType != "disabled" {
 		msgs = RestoreThinking(msgs, req.OriginalMessages)
 	}
-	msgs = mergeAdjacentSameRole(filterThinkingBlocks(msgs, thinkingType != "disabled"))
+	msgs = filterThinkingBlocks(msgs, thinkingType != "disabled")
+	if err := validateReplay(msgs, p.replaySource()); err != nil {
+		return nil, err
+	}
+	msgs = mergeAdjacentSameRole(msgs)
 	if err := validateAnthropicHistory(msgs, thinkingType); err != nil {
 		return nil, err
 	}
@@ -126,9 +146,15 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 		}
 		defer resp.Body.Close()
 		scan := newSSEScanner(resp.Body)
+		stopped := false
+		source := p.replaySource()
+		first := true
 		for {
 			_, data, serr := scan.next()
 			if serr == io.EOF {
+				if !stopped {
+					yield(StreamEvent{}, fmt.Errorf("anthropic: %w before message_stop", io.ErrUnexpectedEOF))
+				}
 				return
 			}
 			if serr != nil {
@@ -145,6 +171,13 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 			}
 			if !ok {
 				continue
+			}
+			if first {
+				ev.Source = source
+				first = false
+			}
+			if ev.Type == SEMessageStop {
+				stopped = true
 			}
 			if !yield(ev, nil) {
 				return
@@ -175,7 +208,11 @@ func (p *anthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	if err != nil {
 		return Message{}, "", Usage{}, err
 	}
-	return parseAnthropicResponse(raw)
+	msg, stop, usage, err := parseAnthropicResponse(raw)
+	if err == nil {
+		msg.Replay = &ReplayMetadata{Source: p.replaySource()}
+	}
+	return msg, stop, usage, err
 }
 
 // parseAnthropicResponse decodes a non-streaming Messages API response into the
@@ -183,16 +220,8 @@ func (p *anthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 // text/thinking/tool_use blocks map across directly.
 func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 	var r struct {
-		Type    string `json:"type"`
-		Content []struct {
-			Type      string          `json:"type"`
-			Text      string          `json:"text"`
-			Thinking  string          `json:"thinking"`
-			Signature string          `json:"signature"`
-			ID        string          `json:"id"`
-			Name      string          `json:"name"`
-			Input     json.RawMessage `json:"input"`
-		} `json:"content"`
+		Type       string          `json:"type"`
+		Content    []ContentBlock  `json:"content"`
 		StopReason string          `json:"stop_reason"`
 		Usage      *anthropicUsage `json:"usage"`
 		Error      *struct {
@@ -214,21 +243,10 @@ func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 	if r.Usage != nil {
 		usage = r.Usage.norm()
 	}
-	var blocks []ContentBlock
-	for _, b := range r.Content {
-		switch b.Type {
-		case "text":
-			if b.Text != "" {
-				blocks = append(blocks, TextBlock(b.Text))
-			}
-		case "thinking":
-			blocks = append(blocks, ContentBlock{Type: BlockThinking, Thinking: b.Thinking, Signature: b.Signature})
-		case "tool_use":
-			in := b.Input
-			if len(in) == 0 {
-				in = json.RawMessage("{}")
-			}
-			blocks = append(blocks, ContentBlock{Type: BlockToolUse, ID: b.ID, Name: b.Name, Input: in})
+	blocks := r.Content
+	for i := range blocks {
+		if blocks[i].Type == BlockToolUse && len(blocks[i].Input) == 0 {
+			blocks[i].Input = json.RawMessage("{}")
 		}
 	}
 	return Message{Role: RoleAssistant, Content: blocks}, r.StopReason, usage, nil
@@ -236,13 +254,10 @@ func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 
 func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 	var f struct {
-		Type         string `json:"type"`
-		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"content_block"`
-		Delta struct {
+		Type         string       `json:"type"`
+		Index        int          `json:"index"`
+		ContentBlock ContentBlock `json:"content_block"`
+		Delta        struct {
 			Type        string `json:"type"`
 			Text        string `json:"text"`
 			PartialJSON string `json:"partial_json"`
@@ -259,7 +274,7 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(data), &f); err != nil {
-		return StreamEvent{}, false, nil // tolerate non-JSON keepalives
+		return StreamEvent{}, false, fmt.Errorf("anthropic stream frame: %w", err)
 	}
 	switch f.Type {
 	case "message_start":
@@ -273,21 +288,26 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 			u.OutputTokens = 0
 			return StreamEvent{Type: SEMessageStart, Usage: u}, true, nil
 		}
+		return StreamEvent{Type: SEMessageStart}, true, nil
 	case "content_block_start":
 		if f.ContentBlock.Type == "tool_use" {
-			return StreamEvent{Type: SEToolUseStart, ToolID: f.ContentBlock.ID, ToolName: f.ContentBlock.Name}, true, nil
+			return StreamEvent{Type: SEToolUseStart, ToolID: f.ContentBlock.ID, ToolName: f.ContentBlock.Name, Indexed: true, BlockIndex: f.Index, Block: &f.ContentBlock}, true, nil
 		}
+		return StreamEvent{Type: SEContentBlockStart, Indexed: true, BlockIndex: f.Index, Block: &f.ContentBlock}, true, nil
+	case "content_block_stop":
+		return StreamEvent{Type: SEContentBlockStop, Indexed: true, BlockIndex: f.Index}, true, nil
 	case "content_block_delta":
 		switch f.Delta.Type {
 		case "text_delta":
-			return StreamEvent{Type: SETextDelta, Text: f.Delta.Text}, true, nil
+			return StreamEvent{Type: SETextDelta, Text: f.Delta.Text, Indexed: true, BlockIndex: f.Index}, true, nil
 		case "thinking_delta":
-			return StreamEvent{Type: SEThinkingDelta, Text: f.Delta.Thinking}, true, nil
+			return StreamEvent{Type: SEThinkingDelta, Text: f.Delta.Thinking, Indexed: true, BlockIndex: f.Index}, true, nil
 		case "signature_delta":
-			return StreamEvent{Type: SEThinkingSignature, Text: f.Delta.Signature}, true, nil
+			return StreamEvent{Type: SEThinkingSignature, Text: f.Delta.Signature, Indexed: true, BlockIndex: f.Index}, true, nil
 		case "input_json_delta":
-			return StreamEvent{Type: SEToolInputJSON, Text: f.Delta.PartialJSON}, true, nil
+			return StreamEvent{Type: SEToolInputJSON, Text: f.Delta.PartialJSON, Indexed: true, BlockIndex: f.Index}, true, nil
 		}
+		return StreamEvent{}, false, fmt.Errorf("anthropic: unsupported content delta %q", f.Delta.Type)
 	case "message_delta":
 		ev := StreamEvent{Type: SEMessageDelta, StopReason: f.Delta.StopReason}
 		if f.Usage != nil {
@@ -345,7 +365,7 @@ func filterThinkingBlocks(msgs []Message, thinkingEnabled bool) []Message {
 		if !thinkingEnabled {
 			filtered := make([]ContentBlock, 0, len(content))
 			for _, b := range content {
-				if b.Type != BlockThinking {
+				if !IsReasoningBlock(b) {
 					filtered = append(filtered, b)
 				}
 			}
@@ -357,7 +377,8 @@ func filterThinkingBlocks(msgs []Message, thinkingEnabled bool) []Message {
 		if len(content) == len(m.Content) {
 			out = append(out, m)
 		} else {
-			out = append(out, Message{Role: m.Role, Content: content})
+			m.Content = content
+			out = append(out, m)
 		}
 	}
 	return out

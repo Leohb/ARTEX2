@@ -21,10 +21,11 @@ const (
 type BlockType string
 
 const (
-	BlockText       BlockType = "text"
-	BlockThinking   BlockType = "thinking"
-	BlockToolUse    BlockType = "tool_use"
-	BlockToolResult BlockType = "tool_result"
+	BlockText             BlockType = "text"
+	BlockThinking         BlockType = "thinking"
+	BlockRedactedThinking BlockType = "redacted_thinking"
+	BlockToolUse          BlockType = "tool_use"
+	BlockToolResult       BlockType = "tool_result"
 )
 
 // ContentBlock is one piece of message content. Which fields are populated
@@ -45,11 +46,16 @@ type ContentBlock struct {
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
+	// IncompleteInput retains an interrupted JSON fragment in saved records.
+	// It is never a valid tool request and is rejected before replay.
+	IncompleteInput string `json:"incomplete_input,omitempty"`
 
 	// ToolResult: the outcome of a tool, fed back to the model.
 	ToolUseID string         `json:"tool_use_id,omitempty"`
 	Content   []ContentBlock `json:"content,omitempty"`
 	IsError   bool           `json:"is_error,omitempty"`
+	// Opaque preserves response blocks the neutral model cannot interpret.
+	Opaque json.RawMessage `json:"-"`
 }
 
 // TextBlock builds a text content block.
@@ -69,6 +75,8 @@ func ToolResultText(toolUseID, text string, isError bool) ContentBlock {
 type Message struct {
 	Role    Role           `json:"role"`
 	Content []ContentBlock `json:"content"`
+	// Replay is local metadata, persisted separately from the wire message.
+	Replay *ReplayMetadata `json:"-"`
 }
 
 // UserText builds a user message with one text block.
@@ -134,10 +142,13 @@ type CompletionRequest struct {
 	// OriginalMessages is the raw same-session history, used only to restore
 	// thinking stripped by a request projection. It is never serialized.
 	OriginalMessages []Message `json:"-"`
-	Tools            []ToolSchema
-	MaxTokens        int
-	Temperature      *float64
-	Stop             []string
+	// ValidateOriginalHistory is set by the harness for complete raw history;
+	// callers supplying only restoration candidates leave it false.
+	ValidateOriginalHistory bool `json:"-"`
+	Tools                   []ToolSchema
+	MaxTokens               int
+	Temperature             *float64
+	Stop                    []string
 	// Thinking overrides the provider's thinking mode for THIS request only:
 	// "" inherits Config.ThinkingType; "enabled"/"disabled" force that mode.
 	// Compaction's summary call sets "disabled" so the summarizer never spends

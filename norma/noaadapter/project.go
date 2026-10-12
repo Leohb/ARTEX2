@@ -97,6 +97,8 @@ func projectBlock(role llm.Role, b llm.ContentBlock, toolNames map[string]string
 
 	case llm.BlockThinking:
 		return noa.CoreMessage{Role: noa.RoleAssistant, ContentType: noa.CTReasoning, Text: b.Thinking}, true
+	case llm.BlockRedactedThinking:
+		return noa.CoreMessage{Role: noa.RoleAssistant, ContentType: noa.CTReasoning, Text: string(b.Opaque)}, true
 
 	case llm.BlockToolUse:
 		return noa.CoreMessage{
@@ -112,7 +114,10 @@ func projectBlock(role llm.Role, b llm.ContentBlock, toolNames map[string]string
 		}, true
 
 	default:
-		// compact_boundary and anything else the host may add: not content.
+		if len(b.Opaque) > 0 && b.Type != llm.BlockCompactBoundary {
+			return noa.CoreMessage{Role: noa.RoleAssistant, ContentType: noa.CTReasoning, Text: string(b.Opaque)}, true
+		}
+		// Boundary markers are not model content.
 		return noa.CoreMessage{}, false
 	}
 }
@@ -215,7 +220,8 @@ func rebuildMessage(orig llm.Message, group []noa.CoreMessage, sc *Sidecar, opts
 	if len(content) == 0 {
 		return llm.Message{}, false
 	}
-	return llm.Message{Role: orig.Role, Content: content}, true
+	orig.Content = content
+	return orig, true
 }
 
 // rebuildBlock restores one content block, writing back any rewrite the
@@ -230,11 +236,12 @@ func rebuildBlock(b llm.ContentBlock, c noa.CoreMessage, sc *Sidecar, opts Reass
 		b.Text = body
 
 	case llm.BlockThinking:
-		b.Thinking = c.Text
 		// The signature is restored verbatim. Rewriting thinking text while
 		// keeping the old signature makes Anthropic reject the request, so the
 		// two must move together or not at all.
-		b.Signature = sc.Signatures[c.ID]
+		if b.Signature == "" {
+			b.Thinking = c.Text
+		}
 
 	case llm.BlockToolUse:
 		// Only replace the arguments if the rewrite is still valid JSON.
@@ -294,7 +301,7 @@ func dropEmpty(msgs []llm.Message) []llm.Message {
 		if m.Role == llm.RoleAssistant && m.Text() == "" && len(m.ToolUses()) == 0 {
 			hasThinking := false
 			for _, b := range m.Content {
-				if b.Type == llm.BlockThinking {
+				if llm.IsReasoningBlock(b) || len(b.Opaque) > 0 {
 					hasThinking = true
 					break
 				}

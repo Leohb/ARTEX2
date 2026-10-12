@@ -383,6 +383,9 @@ func (s *Session) Resume(sessionID string) error {
 func cleanResumed(msgs []llm.Message) []llm.Message {
 	for len(msgs) > 0 {
 		last := msgs[len(msgs)-1]
+		if last.Replay != nil && last.Replay.Incomplete {
+			break
+		}
 		if last.Role == llm.RoleAssistant && len(last.ToolUses()) > 0 {
 			msgs = msgs[:len(msgs)-1]
 			continue

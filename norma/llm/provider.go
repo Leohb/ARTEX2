@@ -17,6 +17,8 @@ type StreamEventType string
 
 const (
 	SEMessageStart      StreamEventType = "message_start"
+	SEContentBlockStart StreamEventType = "content_block_start"
+	SEContentBlockStop  StreamEventType = "content_block_stop"
 	SETextDelta         StreamEventType = "text_delta"
 	SEThinkingDelta     StreamEventType = "thinking_delta"
 	SEThinkingSignature StreamEventType = "thinking_signature"
@@ -34,6 +36,12 @@ type StreamEvent struct {
 	ToolName   string // tool_use_start
 	StopReason string // message_delta
 	Usage      Usage  // message_start / message_delta
+	// Indexed events retain the provider's content-block boundaries. Legacy
+	// adapters can continue to emit unindexed deltas and tool starts.
+	Indexed    bool
+	BlockIndex int
+	Block      *ContentBlock
+	Source     *ReplaySource
 }
 
 // Format selects the wire protocol of a Provider.

@@ -458,6 +458,26 @@ func (l *loop) run() {
 			return
 		}
 		if streamErr != nil {
+			// A dropped stream may follow completed tool calls. Persist the partial
+			// turn and their results before returning, so Resume cannot replay the
+			// same side effects as though the failed turn never happened.
+			if len(asst.Content) > 0 {
+				if asst.Replay == nil {
+					asst.Replay = &llm.ReplayMetadata{}
+				}
+				asst.Replay.Incomplete = true
+				l.messages = append(l.messages, asst)
+				l.record(asst, usageDelta(usageBefore, l.usage))
+				if exec != nil && exec.count() > 0 {
+					results := llm.Message{Role: llm.RoleUser, Content: exec.results()}
+					l.messages = append(l.messages, results)
+					l.record(results, llm.Usage{})
+					for _, m := range exec.extraMessages() {
+						l.messages = append(l.messages, m)
+						l.record(m, llm.Usage{})
+					}
+				}
+			}
 			if l.ctx.Err() != nil {
 				l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
 				return
@@ -870,13 +890,14 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		msgs = append([]llm.Message{llm.UserText(l.in.SystemReminder)}, msgs...)
 	}
 	req := llm.CompletionRequest{
-		System:           l.in.System,
-		DynamicBoundary:  l.in.DynamicBoundary,
-		Messages:         msgs,
-		OriginalMessages: l.originalMessages,
-		Tools:            schemas,
-		MaxTokens:        l.maxTokens(),
-		Temperature:      l.in.Temperature,
+		System:                  l.in.System,
+		DynamicBoundary:         l.in.DynamicBoundary,
+		Messages:                msgs,
+		OriginalMessages:        l.originalMessages,
+		ValidateOriginalHistory: true,
+		Tools:                   schemas,
+		MaxTokens:               l.maxTokens(),
+		Temperature:             l.in.Temperature,
 	}
 	if l.in.NonStreaming {
 		return l.completeAndExecute(req)
@@ -885,6 +906,8 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 	acc := llm.NewAccumulator()
 
 	var building bool
+	var curIndexed bool
+	var curIndex int
 	var curID, curName string
 	var curInput strings.Builder
 	finalizeTool := func() bool { // false = consumer stopped
@@ -894,8 +917,12 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		building = false
 		raw := strings.TrimSpace(curInput.String())
 		curInput.Reset()
-		if raw == "" || !jsonValid(raw) {
+		if raw == "" {
 			raw = "{}"
+		}
+		if !jsonValid(raw) {
+			err = fmt.Errorf("incomplete tool input for %s", curID)
+			return true
 		}
 		block := llm.ContentBlock{Type: llm.BlockToolUse, ID: curID, Name: curName, Input: []byte(raw)}
 		if !l.emit(Event{Kind: KindToolUse, ToolUse: &block}) {
@@ -912,16 +939,32 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		}
 		l.modelEmitted = true
 		if ev.Type == llm.SEToolInputJSON {
-			if building {
+			if building && (!curIndexed || !ev.Indexed || ev.BlockIndex == curIndex) {
 				curInput.WriteString(ev.Text)
 			}
 			acc.Add(ev)
 			continue
 		}
-		if !finalizeTool() {
+		finishCurrent := !curIndexed || ev.Type == llm.SEToolUseStart || ev.Type == llm.SEContentBlockStart ||
+			ev.Type == llm.SEMessageDelta || ev.Type == llm.SEMessageStop ||
+			(ev.Type == llm.SEContentBlockStop && ev.BlockIndex == curIndex)
+		if finishCurrent && !finalizeTool() {
 			return asst, exec, "", nil, true, false
 		}
+		if err != nil {
+			break
+		}
 		switch ev.Type {
+		case llm.SEContentBlockStart:
+			if ev.Block != nil {
+				kind, text := KindText, ev.Block.Text
+				if ev.Block.Type == llm.BlockThinking {
+					kind, text = KindThinking, ev.Block.Thinking
+				}
+				if text != "" && !l.emit(Event{Kind: kind, Text: text}) {
+					return asst, exec, "", nil, true, false
+				}
+			}
 		case llm.SETextDelta:
 			if ev.Text != "" && !l.emit(Event{Kind: KindText, Text: ev.Text}) {
 				return asst, exec, "", nil, true, false
@@ -932,24 +975,25 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			}
 		case llm.SEToolUseStart:
 			curID, curName, building = ev.ToolID, ev.ToolName, true
+			curIndexed, curIndex = ev.Indexed, ev.BlockIndex
+			if ev.Block != nil && len(ev.Block.Input) > 0 && string(ev.Block.Input) != "{}" {
+				curInput.Write(ev.Block.Input)
+			}
 		}
 		acc.Add(ev)
 	}
-	if !finalizeTool() {
+	if err == nil && !finalizeTool() {
 		return asst, exec, "", nil, true, false
 	}
 	l.usage.Add(acc.Usage)
 	asst = acc.Message()
 	stopReason = acc.StopReason
-	if err != nil {
-		return asst, exec, stopReason, err, false, false
-	}
 	// Drain tools to completion (or synthesize on abort).
 	cs, ab := exec.finish()
 	if cs {
-		return asst, exec, stopReason, nil, true, false
+		return asst, exec, stopReason, err, true, false
 	}
-	return asst, exec, stopReason, nil, false, ab
+	return asst, exec, stopReason, err, false, ab
 }
 
 // completeAndExecute is the non-streaming counterpart of streamAndExecute's body.

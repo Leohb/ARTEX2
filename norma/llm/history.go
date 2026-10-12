@@ -69,8 +69,14 @@ func RestoreThinking(view, original []Message) []Message {
 				continue
 			}
 			if match != nil {
-				left, leftErr := json.Marshal(match.Content)
-				right, rightErr := json.Marshal(candidate.Content)
+				left, leftErr := json.Marshal(struct {
+					Content []ContentBlock
+					Replay  *ReplayMetadata
+				}{match.Content, match.Replay})
+				right, rightErr := json.Marshal(struct {
+					Content []ContentBlock
+					Replay  *ReplayMetadata
+				}{candidate.Content, candidate.Replay})
 				if leftErr != nil || rightErr != nil || !bytes.Equal(left, right) {
 					ambiguous = true
 					break
@@ -80,6 +86,7 @@ func RestoreThinking(view, original []Message) []Message {
 		}
 		if match != nil && !ambiguous {
 			out[i].Content = append([]ContentBlock(nil), match.Content...)
+			out[i].Replay = match.Replay
 		}
 	}
 	return out
@@ -88,7 +95,7 @@ func RestoreThinking(view, original []Message) []Message {
 func withoutThinking(blocks []ContentBlock) []ContentBlock {
 	out := make([]ContentBlock, 0, len(blocks))
 	for _, b := range blocks {
-		if b.Type != BlockThinking {
+		if !IsReasoningBlock(b) {
 			out = append(out, b)
 		}
 	}
@@ -97,7 +104,7 @@ func withoutThinking(blocks []ContentBlock) []ContentBlock {
 
 func hasThinking(m Message) bool {
 	for _, b := range m.Content {
-		if b.Type == BlockThinking {
+		if IsReasoningBlock(b) {
 			return true
 		}
 	}
@@ -112,6 +119,9 @@ func validateAnthropicHistory(msgs []Message, mode string) error {
 			return &HistoryError{Reason: "missing tool result", MessageIndex: i}
 		}
 		for _, b := range m.Content {
+			if b.IncompleteInput != "" {
+				return &HistoryError{Reason: "incomplete model response", MessageIndex: i, ToolID: b.ID, Recoverable: true}
+			}
 			switch b.Type {
 			case BlockToolUse:
 				if m.Role != RoleAssistant || b.ID == "" || seen[b.ID] {

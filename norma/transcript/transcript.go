@@ -35,16 +35,17 @@ import (
 
 // Record is one line of a JSONL transcript.
 type Record struct {
-	UUID        string            `json:"uuid"`
-	ParentUUID  string            `json:"parent_uuid,omitempty"`
-	SessionID   string            `json:"session_id"`
-	AgentID     string            `json:"agent_id,omitempty"`
-	IsSidechain bool              `json:"is_sidechain,omitempty"`
-	Timestamp   string            `json:"timestamp"`
-	Type        string            `json:"type"` // "message" | "boundary"
-	Message     *llm.Message      `json:"message,omitempty"`
-	Usage       *llm.Usage        `json:"usage,omitempty"`    // assistant turns only
-	Boundary    *llm.BoundaryMeta `json:"boundary,omitempty"` // Type=="boundary"
+	UUID        string              `json:"uuid"`
+	ParentUUID  string              `json:"parent_uuid,omitempty"`
+	SessionID   string              `json:"session_id"`
+	AgentID     string              `json:"agent_id,omitempty"`
+	IsSidechain bool                `json:"is_sidechain,omitempty"`
+	Timestamp   string              `json:"timestamp"`
+	Type        string              `json:"type"` // "message" | "boundary"
+	Message     *llm.Message        `json:"message,omitempty"`
+	Replay      *llm.ReplayMetadata `json:"replay,omitempty"`
+	Usage       *llm.Usage          `json:"usage,omitempty"`    // assistant turns only
+	Boundary    *llm.BoundaryMeta   `json:"boundary,omitempty"` // Type=="boundary"
 }
 
 // Store is a directory of session transcripts.
@@ -136,7 +137,9 @@ func Messages(recs []Record) ([]llm.Message, llm.Usage) {
 		if r.Type == "boundary" || r.Message == nil {
 			continue
 		}
-		msgs = append(msgs, *r.Message)
+		m := *r.Message
+		m.Replay = r.Replay
+		msgs = append(msgs, m)
 		if r.Usage != nil {
 			total.Add(*r.Usage)
 		}
@@ -218,7 +221,7 @@ func (w *Writer) write(r Record) {
 // RecordMessage persists a conversation message. usage is attributed to this
 // turn (zero for non-assistant messages).
 func (w *Writer) RecordMessage(m llm.Message, usage llm.Usage) {
-	rec := Record{Type: "message", Message: &m}
+	rec := Record{Type: "message", Message: &m, Replay: m.Replay}
 	if usage != (llm.Usage{}) {
 		u := usage
 		rec.Usage = &u

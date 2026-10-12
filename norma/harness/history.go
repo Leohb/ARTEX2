@@ -32,6 +32,12 @@ func (l *loop) recoverHistory(err error) bool {
 		return false
 	}
 	view := l.lastRequestMessages
+	if rejected.Reason == "incomplete model response" {
+		view = historyWorkingSet(l.originalMessages)
+		if i := llm.LastBoundaryIndex(view); i >= 0 {
+			view = view[i+1:]
+		}
+	}
 	canReset := false
 	for _, m := range view {
 		if m.Role == llm.RoleAssistant {
@@ -87,7 +93,7 @@ func (l *loop) recoverHistory(err error) bool {
 func historyFacts(blocks []llm.ContentBlock) []llm.ContentBlock {
 	out := make([]llm.ContentBlock, 0, len(blocks))
 	for _, b := range blocks {
-		if b.Type == llm.BlockThinking {
+		if llm.IsReasoningBlock(b) {
 			continue
 		}
 		if len(b.Content) > 0 {

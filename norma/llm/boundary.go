@@ -144,7 +144,8 @@ func PairToolBlocks(msgs []Message) []Message {
 			kept = append(kept, b)
 		}
 		if len(kept) > 0 {
-			out = append(out, Message{Role: m.Role, Content: kept})
+			m.Content = kept
+			out = append(out, m)
 		}
 	}
 	return out
