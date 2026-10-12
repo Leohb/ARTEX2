@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 代码组织
+
+- 将 `server.go`、`server_mgmt.go` 中的 HTTP API、路由、模型装配、提示词模板及 Skill 文件操作按职责拆分，保留同一 `server` 包和现有接口。
+- 接续拆分时保留 v0.4.0 的后台同步锁与启动恢复、四条同步历史/job 路由、任务收官 DTO/报告和 Windows Skill 路径修正，不改变数据库结构或配置格式。
+
 ## [0.4.0] - 2026-10-11
 
 本次为功能版本，重点完善资产同步、任务完成校验和 Worker 收尾。详细说明见 [v0.4.0 Release](https://github.com/sharenjun/ARTEX-main/releases/tag/v0.4.0)。
