@@ -142,8 +142,12 @@ func TestAnthropicInvalidThinkingModeAndHistoryHTTPClassification(t *testing.T) 
 		history    bool
 	}{
 		{name: "missing reasoning", status: 400, body: `{"error":{"message":"messages.1: expected thinking before tool_use"}}`, history: true},
+		{name: "recorded task thinking replay", status: 400, body: "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The `content[].thinking` in the thinking mode must be passed back to the API.\"},\"type\":\"error\"}", history: true},
 		{name: "bad signature", status: 400, body: `{"error":{"message":"Invalid signature in thinking block"}}`, history: true},
 		{name: "token configuration", status: 400, body: `{"error":{"message":"thinking budget_tokens must be less than max_tokens"}}`},
+		{name: "mandatory reasoning", status: 400, body: `{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled."}}`},
+		{name: "thinking parameter configuration", status: 400, body: `{"error":{"message":"thinking.type must be passed back to the API as enabled"}}`},
+		{name: "server replay failure", status: 500, body: "{\"error\":{\"message\":\"The `content[].thinking` in the thinking mode must be passed back to the API.\"}}"},
 		{name: "server failure", status: 500, body: `{"error":{"message":"missing thinking in messages"}}`},
 	}
 	for _, tc := range cases {

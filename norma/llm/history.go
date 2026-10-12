@@ -180,7 +180,10 @@ func classifyAnthropicHistory(err error) error {
 		strings.Contains(text, "must start with")
 	history := strings.Contains(text, "thinking") && (strings.Contains(text, "messages") || strings.Contains(text, "tool"))
 	badSignature := strings.Contains(text, "signature") && (strings.Contains(text, "invalid") || strings.Contains(text, "required"))
-	if (missing && history) || badSignature {
+	// Some Messages gateways name the replay field without mentioning messages
+	// or tools. Keep this exact history complaint distinct from mode settings.
+	requiredReplay := strings.Contains(text, "content[].thinking") && strings.Contains(text, "must be passed back to the api")
+	if (missing && history) || badSignature || requiredReplay {
 		return &HistoryError{Reason: "provider rejected thinking history", MessageIndex: -1, Recoverable: true, Cause: err}
 	}
 	return err
