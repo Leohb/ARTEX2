@@ -131,10 +131,13 @@ type CompletionRequest struct {
 	// there (FR-02.2). 0 disables.
 	DynamicBoundary int
 	Messages        []Message
-	Tools           []ToolSchema
-	MaxTokens       int
-	Temperature     *float64
-	Stop            []string
+	// OriginalMessages is the raw same-session history, used only to restore
+	// thinking stripped by a request projection. It is never serialized.
+	OriginalMessages []Message `json:"-"`
+	Tools            []ToolSchema
+	MaxTokens        int
+	Temperature      *float64
+	Stop             []string
 	// Thinking overrides the provider's thinking mode for THIS request only:
 	// "" inherits Config.ThinkingType; "enabled"/"disabled" force that mode.
 	// Compaction's summary call sets "disabled" so the summarizer never spends

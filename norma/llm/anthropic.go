@@ -52,19 +52,21 @@ func (p *anthropicProvider) buildBody(req CompletionRequest, stream bool) ([]byt
 	if maxTok == 0 {
 		maxTok = 8192
 	}
-	// Effective thinking mode: a non-empty per-request override (req.Thinking)
-	// wins over Config.ThinkingType. Thinking-type content blocks may be replayed
-	// only when thinking is actively "enabled"; any other mode (incl. "disabled")
-	// strips them so Anthropic does not reject the request.
-	thinkingType := p.cfg.ThinkingType
-	thinkingEnabled := thinkingType != ""
-	if req.Thinking != "" {
-		thinkingType = req.Thinking
-		thinkingEnabled = req.Thinking == "enabled"
+	thinkingType, err := resolveThinkingMode(p.cfg.ThinkingType, req.Thinking)
+	if err != nil {
+		return nil, err
+	}
+	msgs := req.Messages
+	if thinkingType != "disabled" {
+		msgs = RestoreThinking(msgs, req.OriginalMessages)
+	}
+	msgs = mergeAdjacentSameRole(filterThinkingBlocks(msgs, thinkingType != "disabled"))
+	if err := validateAnthropicHistory(msgs, thinkingType); err != nil {
+		return nil, err
 	}
 	body := anthropicReq{
 		Model:         p.cfg.Model,
-		Messages:      mergeAdjacentSameRole(filterThinkingBlocks(req.Messages, thinkingEnabled)),
+		Messages:      msgs,
 		MaxTokens:     maxTok,
 		Temperature:   req.Temperature,
 		StopSequences: req.Stop,
@@ -119,7 +121,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 			r.Header.Set("accept", "text/event-stream")
 		}, "anthropic")
 		if err != nil {
-			yield(StreamEvent{}, err)
+			yield(StreamEvent{}, classifyAnthropicHistory(err))
 			return
 		}
 		defer resp.Body.Close()
@@ -166,7 +168,7 @@ func (p *anthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 		r.Header.Set("accept", "application/json")
 	}, "anthropic")
 	if err != nil {
-		return Message{}, "", Usage{}, err
+		return Message{}, "", Usage{}, classifyAnthropicHistory(err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
@@ -329,8 +331,7 @@ func (u anthropicUsage) norm() Usage {
 
 // filterThinkingBlocks normalizes message history before it is sent to the
 // Anthropic Messages API. It strips thinking-type content blocks when thinking
-// is disabled (Anthropic rejects replayed thinking blocks without the thinking
-// parameter enabled), and drops any message left with no content blocks —
+// is explicitly disabled, and drops any message left with no content blocks —
 // Anthropic rejects an empty content array. An empty message arrives here two
 // ways: a thinking-only turn that collapses to empty once thinking is stripped,
 // or an empty/truncated assistant turn (only reasoning, or nothing) that was

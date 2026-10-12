@@ -25,6 +25,10 @@ type BoundaryMeta struct {
 	// ActiveSkills names the invoked skills re-injected verbatim after this
 	// boundary (diagnostics; the instructions themselves ride in the messages).
 	ActiveSkills []string `json:"active_skills,omitempty"`
+	// RecoveryReason and HistoryDigest identify a thinking-history reset without
+	// placing provider error bodies or credentials in boundary metadata.
+	RecoveryReason string `json:"recovery_reason,omitempty"`
+	HistoryDigest  string `json:"history_digest,omitempty"`
 }
 
 // BoundaryMessage builds a compact-boundary marker carrying its metadata. It

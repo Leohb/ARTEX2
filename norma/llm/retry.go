@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+// HTTPError preserves the status for callers that classify deterministic errors.
+type HTTPError struct {
+	Provider   string
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("%s: status %d: %s", e.Provider, e.StatusCode, e.Body)
+}
+
 // doStream sends the streaming request with retries on transient failures and
 // returns a 200 response (caller reads + closes the body). Only the request
 // establishment phase is retried — connection reset / timeout / 429 / 5xx before
@@ -50,7 +61,7 @@ func doStream(ctx context.Context, cfg Config, url string, body []byte, setHeade
 			}
 			data, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return nil, fmt.Errorf("%s: status %d: %s", errPrefix, resp.StatusCode, strings.TrimSpace(string(data)))
+			return nil, &HTTPError{Provider: errPrefix, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(data))}
 		}
 		if resp != nil {
 			resp.Body.Close()

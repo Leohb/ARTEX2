@@ -220,6 +220,7 @@ func Query(ctx context.Context, in QueryInput, deps QueryDeps) iter.Seq2[Event, 
 	return func(yield func(Event, error) bool) {
 		l := &loop{ctx: ctx, in: in, deps: deps, yield: yield, sem: make(chan struct{}, conc)}
 		l.messages = append([]llm.Message(nil), in.Messages...)
+		l.originalMessages = append([]llm.Message(nil), historyWorkingSet(in.Messages)...)
 		l.run()
 	}
 }
@@ -244,12 +245,16 @@ type loop struct {
 	yield   func(Event, error) bool
 	sem     chan struct{} // bounds concurrent tool execution
 
-	messages        []llm.Message
-	usage           llm.Usage
-	lastInputTokens int // total token size the previous model response reported (compaction gate)
-	turnCount       int
-	boundaryCount   int       // boundary markers already seen, so Recorder fires once each
-	startTime       time.Time // loop start, for MaxDuration (wall-clock budget)
+	messages            []llm.Message
+	originalMessages    []llm.Message
+	lastRequestMessages []llm.Message
+	historyRecovered    bool
+	modelEmitted        bool
+	usage               llm.Usage
+	lastInputTokens     int // total token size the previous model response reported (compaction gate)
+	turnCount           int
+	boundaryCount       int       // boundary markers already seen, so Recorder fires once each
+	startTime           time.Time // loop start, for MaxDuration (wall-clock budget)
 
 	// settlement (wrap-up) phase state, entered when a budget is hit
 	settling          bool
@@ -284,6 +289,7 @@ func (l *loop) emit(ev Event) bool { return l.yield(ev, nil) }
 
 // record forwards a newly appended message to the transcript Recorder, if any.
 func (l *loop) record(m llm.Message, u llm.Usage) {
+	l.originalMessages = append(l.originalMessages, m)
 	if l.in.Recorder != nil {
 		l.in.Recorder.RecordMessage(m, u)
 	}
@@ -459,6 +465,9 @@ func (l *loop) run() {
 			if l.settling && l.phaseContext().Err() != nil {
 				l.finish(l.settleReason, l.phaseContext().Err(), "")
 				return
+			}
+			if l.recoverHistory(streamErr) {
+				continue
 			}
 			// Reactive recovery from prompt-too-long: one forced AutoCompact, then retry.
 			if l.in.Compactor != nil && l.in.Compactor.IsOverflow(streamErr) && !l.hasAttemptedReactiveCompact {
@@ -847,7 +856,7 @@ func messageHasToolUse(m llm.Message, name string) bool {
 // Either way l.messages is left untouched.
 func (l *loop) requestMessages() []llm.Message {
 	if v, ok := l.in.Compactor.(ContextView); ok {
-		return v.View(l.phaseContext(), l.messages)
+		return v.View(l.phaseContext(), historyWorkingSet(l.messages))
 	}
 	return llm.MessagesForAPI(l.messages)
 }
@@ -855,16 +864,19 @@ func (l *loop) requestMessages() []llm.Message {
 func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	l.maybeInjectTodoReminder()
 	msgs := l.requestMessages()
+	l.lastRequestMessages = msgs
+	l.modelEmitted = false
 	if l.in.SystemReminder != "" {
 		msgs = append([]llm.Message{llm.UserText(l.in.SystemReminder)}, msgs...)
 	}
 	req := llm.CompletionRequest{
-		System:          l.in.System,
-		DynamicBoundary: l.in.DynamicBoundary,
-		Messages:        msgs,
-		Tools:           schemas,
-		MaxTokens:       l.maxTokens(),
-		Temperature:     l.in.Temperature,
+		System:           l.in.System,
+		DynamicBoundary:  l.in.DynamicBoundary,
+		Messages:         msgs,
+		OriginalMessages: l.originalMessages,
+		Tools:            schemas,
+		MaxTokens:        l.maxTokens(),
+		Temperature:      l.in.Temperature,
 	}
 	if l.in.NonStreaming {
 		return l.completeAndExecute(req)
@@ -898,6 +910,7 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			err = e
 			break
 		}
+		l.modelEmitted = true
 		if ev.Type == llm.SEToolInputJSON {
 			if building {
 				curInput.WriteString(ev.Text)
