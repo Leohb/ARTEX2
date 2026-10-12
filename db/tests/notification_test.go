@@ -5,6 +5,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"hash/fnv"
 	"testing"
 	"time"
 
@@ -26,17 +27,35 @@ func notifyTestDB(t *testing.T) *DB {
 }
 
 // newTestChannel 建一个渠道，测试结束自动删除。
+func notificationFixtureTaskID(t *testing.T) int64 {
+	t.Helper()
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(t.Name()))
+	return 1<<40 + int64(h.Sum32())
+}
+
 func newTestChannel(t *testing.T, d *DB, kind, mode string, filter string) *NotificationChannel {
 	t.Helper()
 	if filter == "" {
 		filter = `{}`
+	}
+	// Synthetic fixture events are scoped independently from retained graph
+	// audit events created by other tests in the same disposable database.
+	var scoped notify.Filter
+	if err := json.Unmarshal([]byte(filter), &scoped); err != nil {
+		t.Fatal(err)
+	}
+	scoped.TaskIDs = []int64{notificationFixtureTaskID(t)}
+	rawFilter, err := json.Marshal(scoped)
+	if err != nil {
+		t.Fatal(err)
 	}
 	ch := &NotificationChannel{
 		Name:       "测试渠道-" + t.Name(),
 		Kind:       kind,
 		Mode:       mode,
 		Config:     json.RawMessage(`{"webhook":"https://example.com/hook"}`),
-		Filter:     json.RawMessage(filter),
+		Filter:     rawFilter,
 		RatePerMin: 100,
 	}
 	id, err := d.SaveNotificationChannel(context.Background(), ch)
@@ -53,6 +72,7 @@ func addTestEvent(t *testing.T, d *DB, kind string, findingID int64, snap notify
 	t.Helper()
 	snap.Kind = kind
 	snap.FindingID = findingID
+	snap.TaskID = notificationFixtureTaskID(t)
 	id, err := d.AddNotificationEvent(context.Background(), kind, findingID, snap)
 	if err != nil {
 		t.Fatalf("写事件失败: %v", err)
