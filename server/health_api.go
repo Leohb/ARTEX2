@@ -82,7 +82,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	out["engine_mode"] = engineMode
 
 	out["active_task"] = map[string]any{
-		"id": t.ID, "description": t.Description, "goal": t.Goal,
+		"id": t.ID, "description": t.descriptionText(), "goal": t.goalText(),
 		"running":       running,
 		"paused":        paused,
 		"engine_mode":   engineMode,

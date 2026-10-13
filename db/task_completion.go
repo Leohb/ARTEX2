@@ -201,6 +201,15 @@ func completionInput(ctx context.Context, tx *sql.Tx, taskID int64, dispositions
 		if n.Kind == KindGoal && n.State != "met" {
 			input.GoalsMet = false
 		}
+		if n.Kind == KindGoal && n.State == "met" {
+			current, err := (&ExplorationStore{expID: expID}).currentGoalProof(ctx, tx, n.ID)
+			if err != nil {
+				return input, "", err
+			}
+			if !current {
+				input.GoalsMet = false
+			}
+		}
 		if n.Kind != KindIntent || n.State == "done" {
 			continue
 		}

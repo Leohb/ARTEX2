@@ -241,4 +241,4 @@ jobs:
           fail_on_unmatched_files: true
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           make_latest: ${{ needs.prepare.outputs.stable == 'true' && 'true' || 'false' }}
-          generate_release_notes: true
+          generate_release_notes: false

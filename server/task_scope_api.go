@@ -1,7 +1,9 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -114,6 +116,8 @@ func (s *Server) taskScopeList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, "task not found")
@@ -122,6 +126,15 @@ func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
 	as := s.m.Assets()
 	if as == nil {
 		writeErr(w, 503, "asset store 未启用")
+		return
+	}
+	if !s.engine.beginTaskOperation(t.ID) {
+		writeErr(w, 409, "任务正在删除")
+		return
+	}
+	defer s.engine.decInflight(t.ID)
+	if !evidenceEditQuiescent(s, t) {
+		writeErr(w, 409, "请先暂停任务并等待执行退出，再修改测试范围")
 		return
 	}
 	var body struct {
@@ -134,15 +147,18 @@ func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	ts, err := as.AddAgentScope(taskID, body.Kind, body.Value, body.Reason, "manual")
+	ts, err := as.EditManualTaskScope(r.Context(), taskID, 0, body.Kind, body.Value, body.Reason)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	t.NotifyGoalEdited("测试范围", body.Reason)
 	writeJSON(w, 200, ts)
 }
 
 func (s *Server) taskScopeDelete(w http.ResponseWriter, r *http.Request) {
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, "task not found")
@@ -153,20 +169,30 @@ func (s *Server) taskScopeDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, "asset store 未启用")
 		return
 	}
+	if !s.engine.beginTaskOperation(t.ID) {
+		writeErr(w, 409, "任务正在删除")
+		return
+	}
+	defer s.engine.decInflight(t.ID)
+	if !evidenceEditQuiescent(s, t) {
+		writeErr(w, 409, "请先暂停任务并等待执行退出，再修改测试范围")
+		return
+	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	scopeID, err := strconv.ParseInt(r.PathValue("sid"), 10, 64)
 	if err != nil {
 		writeErr(w, 400, "invalid scope id")
 		return
 	}
-	deleted, err := as.DeleteTaskScope(taskID, scopeID)
+	_, err = as.EditManualTaskScope(r.Context(), taskID, scopeID, "", "", "删除范围条目")
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, 404, "scope row not found")
+		return
+	}
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if !deleted {
-		writeErr(w, 404, "scope row not found")
-		return
-	}
+	t.NotifyGoalEdited("测试范围", "删除范围条目")
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }

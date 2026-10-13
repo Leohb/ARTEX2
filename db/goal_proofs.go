@@ -32,6 +32,9 @@ type GoalProofSnapshot struct {
 	Goal            *Node           `json:"goal"`
 	Evidence        *Node           `json:"evidence"`
 	Finding         json.RawMessage `json:"finding,omitempty"`
+	SupportingFacts json.RawMessage `json:"supporting_facts"`
+	Constraints     json.RawMessage `json:"constraints"`
+	Scopes          json.RawMessage `json:"scopes"`
 }
 
 type GoalAudit struct {
@@ -57,16 +60,79 @@ func goalProofDigest(snapshot GoalProofSnapshot) (string, error) {
 }
 
 func goalEvidenceDigest(snapshot GoalProofSnapshot) (string, error) {
+	if len(snapshot.SupportingFacts) == 0 {
+		snapshot.SupportingFacts = json.RawMessage(`[]`)
+	}
 	raw, err := json.Marshal(struct {
-		Goal     json.RawMessage
-		Evidence *Node
-		Finding  json.RawMessage
-	}{snapshot.Goal.Payload, snapshot.Evidence, snapshot.Finding})
+		Goal            json.RawMessage
+		Evidence        *Node
+		Finding         json.RawMessage
+		SupportingFacts json.RawMessage
+		Constraints     json.RawMessage
+		Scopes          json.RawMessage
+		TaskGoal        string
+		TaskDescription string
+	}{snapshot.Goal.Payload, snapshot.Evidence, snapshot.Finding, snapshot.SupportingFacts, snapshot.Constraints, snapshot.Scopes, snapshot.TaskGoal, snapshot.TaskDescription})
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// Audited met goals must still have a proof for the current saved input. A new
+// proof for another finding does not invalidate an unchanged proof. Legacy met
+// goals without an audit retain the existing final-review path.
+func (s *ExplorationStore) currentGoalProof(ctx context.Context, tx *sql.Tx, goalID int64) (bool, error) {
+	var raw json.RawMessage
+	if err := tx.QueryRowContext(ctx, `SELECT goal_audit FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, goalID, s.expID).Scan(&raw); err != nil {
+		return false, err
+	}
+	var audits []GoalAudit
+	if err := json.Unmarshal(raw, &audits); err != nil {
+		return false, err
+	}
+	audited := false
+	for i := len(audits) - 1; i >= 0; i-- {
+		audit := audits[i]
+		if audit.Event != "prove" {
+			continue
+		}
+		audited = true
+		var linked bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_edges WHERE exploration_id=$1 AND src_id=$2 AND dst_id=$3 AND rel='proves')`, s.expID, audit.EvidenceID, goalID).Scan(&linked); err != nil {
+			return false, err
+		}
+		if !linked {
+			continue
+		}
+		var saved GoalProofSnapshot
+		if json.Unmarshal(audit.Snapshot, &saved) != nil || saved.Goal == nil || saved.Evidence == nil {
+			continue
+		}
+		current, err := s.goalProofSnapshot(ctx, tx, goalID, audit.EvidenceID)
+		if errors.Is(err, ErrGoalProofChanged) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if ValidateGoalEvidence(current) != nil {
+			continue
+		}
+		expected, err := goalEvidenceDigest(saved)
+		if err != nil {
+			return false, err
+		}
+		actual, err := goalEvidenceDigest(current)
+		if err != nil {
+			return false, err
+		}
+		if expected == actual {
+			return true, nil
+		}
+	}
+	return !audited, nil
 }
 
 func (s *ExplorationStore) goalTransaction(ctx context.Context, fn func(*sql.Tx) error) error {
@@ -114,6 +180,9 @@ func (s *ExplorationStore) goalProofSnapshot(ctx context.Context, tx *sql.Tx, go
 		return out, errors.Join(ErrGoalProofChanged, err)
 	}
 	out.Evidence.GoalAudit = nil
+	if err = tx.QueryRowContext(ctx, `SELECT `+supportingFactsSQL+` FROM exploration_nodes ev JOIN tasks owner ON owner.id=$2 WHERE ev.id=$1`, evidenceID, out.TaskID).Scan(&out.SupportingFacts); err != nil {
+		return out, err
+	}
 	var sourceTaskID int64
 	err = tx.QueryRowContext(ctx, `SELECT source.id FROM exploration_nodes n JOIN tasks source ON source.exploration_id=n.exploration_id AND source.deleted_at IS NULL WHERE n.id=$1 AND n.exploration_id<>$2`, evidenceID, s.expID).Scan(&sourceTaskID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -123,7 +192,13 @@ func (s *ExplorationStore) goalProofSnapshot(ctx context.Context, tx *sql.Tx, go
 		out.Evidence.SourceTaskID = sourceTaskID
 		out.Evidence.Inherited = true
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(jsonb_build_object('id',id,'status',status,'evidence_version',evidence_version) ORDER BY id),'[]'::jsonb) FROM findings WHERE node_id=$1`, evidenceID).Scan(&out.Finding); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(jsonb_build_object('id',f.id,'status',f.status,'summary',f.summary,'evidence',f.evidence,'vulnclass',f.vulnclass,'evidence_version',f.evidence_version,'traffic',COALESCE((SELECT jsonb_agg(jsonb_build_object('role',b.role,'note',b.note,'snapshot',to_jsonb(ts)) ORDER BY b.position,b.id) FROM finding_traffic_bindings b JOIN traffic_evidence_snapshots ts ON ts.id=b.snapshot_id WHERE b.finding_id=f.id),'[]'::jsonb)) ORDER BY f.id),'[]'::jsonb) FROM findings f WHERE f.node_id=$1`, evidenceID).Scan(&out.Finding); err != nil {
+		return out, err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(to_jsonb(c) ORDER BY c.id),'[]'::jsonb) FROM task_constraints c WHERE exploration_id=$1`, s.expID).Scan(&out.Constraints); err != nil {
+		return out, err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(to_jsonb(sc) ORDER BY sc.id),'[]'::jsonb) FROM task_scope sc WHERE task_id=$1`, out.TaskID).Scan(&out.Scopes); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -155,6 +230,11 @@ func appendGoalAudit(ctx context.Context, tx *sql.Tx, goalID int64, audit GoalAu
 func (s *ExplorationStore) CommitGoalProof(ctx context.Context, snapshot GoalProofSnapshot, supported bool, actor, reason string) error {
 	if strings.TrimSpace(actor) == "" || strings.TrimSpace(reason) == "" || snapshot.Goal == nil || snapshot.Evidence == nil || snapshot.ExplorationID != s.expID {
 		return fmt.Errorf("目标审核缺少来源、理由或快照")
+	}
+	if supported {
+		if err := ValidateGoalEvidence(snapshot); err != nil {
+			return err
+		}
 	}
 	expected, err := goalProofDigest(snapshot)
 	if err != nil {
@@ -255,7 +335,12 @@ func (s *ExplorationStore) editGoalPayload(id int64, text, vulnclass string) err
 		if err != nil {
 			return err
 		}
-		payload := map[string]any{"text": text}
+		payload := map[string]any{}
+		if err := json.Unmarshal(n.Payload, &payload); err != nil {
+			return err
+		}
+		payload["text"] = text
+		delete(payload, "vulnclass")
 		if vulnclass != "" {
 			payload["vulnclass"] = vulnclass
 		}

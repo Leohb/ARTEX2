@@ -317,7 +317,7 @@ func (s *ExplorationStore) ReopenIntent(id int64) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes
 SET state='open', completed_at=NULL, blocked_reason=NULL
 WHERE id=$1 AND exploration_id=$2 AND kind='intent'
-  AND state IN ('blocked','exhausted','stopped')`, id, s.expID)
+  AND state IN ('blocked','exhausted','stopped') AND COALESCE(payload->>'retired_contract','false')<>'true'`, id, s.expID)
 	if err != nil {
 		return false, err
 	}
@@ -330,7 +330,7 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent'
 // number reopened. Workers resume from their transcripts; kept graph writes remain.
 func (s *ExplorationStore) ReopenBlockedIntents() (int64, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
-WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
+WHERE exploration_id=$1 AND kind='intent' AND state='blocked' AND COALESCE(payload->>'retired_contract','false')<>'true'`, s.expID)
 	if err != nil {
 		return 0, err
 	}
@@ -1128,7 +1128,7 @@ func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state='open'
+WHERE exploration_id=$1 AND kind='intent' AND state='open' AND COALESCE(payload->>'retired_contract','false')<>'true'
 ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
 	if err != nil {
 		return nil, err
@@ -1162,7 +1162,7 @@ WHERE exploration_id=$1 AND kind='goal' AND state='open')`, s.expID).Scan(&exist
 // ClaimIntent atomically moves an open intent to running. Returns true if claimed.
 func (s *ExplorationStore) ClaimIntent(id int64, owner string) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1
-WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'`, owner, id, s.expID)
+WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open' AND COALESCE(payload->>'retired_contract','false')<>'true'`, owner, id, s.expID)
 	if err != nil {
 		return false, err
 	}

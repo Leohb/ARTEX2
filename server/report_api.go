@@ -30,7 +30,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	md := report.Markdown(report.Input{
-		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
+		Title: t.descriptionText(), Goal: t.goalText(), GeneratedAt: time.Now(),
 		AssetCounts: counts, Findings: findings,
 	})
 	md += completionReport(completion)

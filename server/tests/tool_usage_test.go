@@ -15,14 +15,56 @@ import (
 )
 
 type recordingToolUsage struct {
-	rows []*db.ToolUsage
-	err  error
+	rows     []*db.ToolUsage
+	err      error
+	outcomes []string
 }
 
 func (r *recordingToolUsage) InsertToolUsage(row *db.ToolUsage) error {
+	row.ID = int64(len(r.rows) + 1)
 	copy := *row
 	r.rows = append(r.rows, &copy)
 	return r.err
+}
+
+func (r *recordingToolUsage) FinishToolUsage(_ int64, outcome string) error {
+	r.outcomes = append(r.outcomes, outcome)
+	return nil
+}
+
+func TestMeterToolRecordsErrorResultAndPanic(t *testing.T) {
+	for _, kind := range []string{"success", "result_error", "go_error", "panic"} {
+		t.Run(kind, func(t *testing.T) {
+			recorder := &recordingToolUsage{}
+			base := actool.Build(actool.Spec{Name: "fixture", Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
+				switch kind {
+				case "result_error":
+					return actool.Errorf("fixture rejected"), nil
+				case "go_error":
+					return actool.Result{}, errors.New("fixture unavailable")
+				case "panic":
+					panic("fixture panic")
+				}
+				return actool.Result{}, nil
+			}})
+			panicked := false
+			func() {
+				defer func() {
+					if recover() != nil {
+						panicked = true
+					}
+				}()
+				_, _ = meterTool(base, recorder, "fixture", "goals", agent.RunInfo{TaskID: 7}).Call(t.Context(), nil, nil)
+			}()
+			want := "error"
+			if kind == "success" {
+				want = "success"
+			}
+			if len(recorder.outcomes) != 1 || recorder.outcomes[0] != want || panicked != (kind == "panic") {
+				t.Fatalf("lost tool outcome: %+v panic=%v", recorder.outcomes, panicked)
+			}
+		})
+	}
 }
 
 func TestMeterToolRecordsAttributionAndDelegates(t *testing.T) {

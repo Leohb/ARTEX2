@@ -448,7 +448,7 @@ func (s *Server) queueFindingCaseReview(ids []int64) ([]map[string]any, error) {
 		if _, err := s.m.pg.Exec(`INSERT INTO finding_case_review_runs(conversation_id,task_id,finding_ids) VALUES($1,$2,$3)`, c.ID, taskID, string(raw)); err != nil {
 			return nil, err
 		}
-		item := triggeredRun{agentKey: "reporter", title: c.Title, message: msg, taskID: taskID, taskDesc: t.Description, taskGoal: t.Goal, conversationID: c.ID}
+		item := triggeredRun{agentKey: "reporter", title: c.Title, message: msg, taskID: taskID, taskDesc: t.descriptionText(), taskGoal: t.goalText(), conversationID: c.ID}
 		cfg := s.readTriggerBehavior("reporter")
 		s.queueMu.Lock()
 		s.triggerCfg["reporter"] = cfg
@@ -525,9 +525,9 @@ func (s *Server) checkCaseReviewScope(ctx context.Context, name string, a findin
 		allowed[id] = true
 	}
 	switch name {
-	case "merge_finding_records", "suggest_finding_merge", "update_finding_report":
+	case "merge_finding_records", "suggest_finding_merge", "update_finding_report", "update_finding_evidence":
 		checkIDs := a.ids()
-		if name == "update_finding_report" {
+		if name == "update_finding_report" || name == "update_finding_evidence" {
 			checkIDs = []int64{parseProfileID(a.FindingID)}
 		}
 		for _, id := range checkIDs {

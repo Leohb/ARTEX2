@@ -17,6 +17,7 @@ import {
 import { CopyButton } from "@/components/copy-button";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
+import { EvidenceAssessment } from "@/components/evidence-assessment";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -213,6 +214,7 @@ export function FindingsTable({
                       <span className="truncate font-medium">{f.name || f.vulnclass || "未分类"}</span>
                     )}
                     <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
+                    <EvidenceAssessment finding={f} />
                     <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
                   </div>
                 </TableCell>

@@ -80,7 +80,7 @@ var errWorkControlConflict = errors.New("work control conflict")
 // In particular, a quota error after partial streaming advances the task cursor
 // for the next LLM call but must not replay this whole intent on the backup.
 func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
-	return reason == harness.ReasonModelError && !isTaskLLMRuntimeError(err)
+	return reason == harness.ReasonModelError && err != nil && !isTaskLLMRuntimeError(err) && modelFailure(err).Retryable
 }
 
 // Engine drives the event-driven exploration loop with real LLM agents
@@ -919,13 +919,36 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			triggers = append(triggers, agent.TriggerEvent{Kind: "completion_rejected", Detail: fmt.Sprint(rejectedReview)})
 		}
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+		before, beforeErr := t.Store.ProgressDigest(ectx)
+		if beforeErr == nil {
+			active, activeErr := t.Store.HasActiveIntent()
+			reached, limitErr := e.m.pg.NoProgressLimitReached(ectx, taskIDInt, before)
+			if activeErr == nil && limitErr == nil && !active && reached {
+				e.pauseForReview(t, "恢复工作没有带来新证据，已达连续三轮无进展上限；保留必要检查缺口")
+				return
+			}
+		}
 		e.BeginLLMCall(t.ID)
 		proposal := new(agent.CompletionProposal)
-		met, reason, err := planner.Plan(agent.WithCompletionProposal(ectx, proposal), taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
+		met, reason, err := planner.Plan(agent.WithCompletionProposal(ectx, proposal), taskIDInt, e.m.assets, t.Store, t.goalText(), triggers, emit)
 		e.EndLLMCall(t.ID)
+		if beforeErr == nil && ectx.Err() == nil && !e.IsDeleting(t.ID) {
+			after, digestErr := t.Store.ProgressDigest(ectx)
+			active, activeErr := t.Store.HasActiveIntent()
+			if digestErr == nil && activeErr == nil {
+				rounds, roundErr := e.m.pg.RecordNoProgressRound(ectx, taskIDInt, before, after, active)
+				if roundErr == nil && rounds >= 3 && !active {
+					e.pauseForReview(t, "连续三轮规划没有新增可核查证据或目标进展，保留未完成目标和检查缺口")
+					return
+				}
+			}
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 规划出错: %v", t.ID, err)
+			if failure := modelFailure(err); !failure.Retryable {
+				e.pauseForReview(t, "模型故障分类："+failure.Kind+"；恢复动作："+failure.Action)
+			}
 		case met && ectx.Err() == nil:
 			if err := e.requestCompletion(ctx, t, reason, proposal.Decisions(), false); err != nil {
 				log.Printf("[completion] task %s 未满足收官条件: %v", t.ID, err)
@@ -1193,9 +1216,16 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	if state == "blocked" && isTaskLLMChainExhausted(err) {
 		_ = t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota)
 	} else {
-		if stateErr := transitionIntentState(t.Store, intent.ID, "running", state); stateErr != nil {
+		failure := modelFailure(err)
+		if stateErr := t.Store.FinalizeIntentResult(intent.ID, state, failure.Kind, failure.Action); stateErr != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 终态 %s 落库失败: %v", name, t.ID, intent.ID, state, stateErr)
+		} else if saved, readErr := t.Store.GetNode(intent.ID); readErr == nil && saved != nil {
+			state = saved.State
 		}
+	}
+	if err != nil && workCtx.Err() == nil && !modelFailure(err).Retryable && !e.IsPaused(t.ID) && !e.isSettling(t.ID) {
+		failure := modelFailure(err)
+		e.pauseForReview(t, "模型故障分类："+failure.Kind+"；恢复动作："+failure.Action+"；原错误已保存在运行记录")
 	}
 	log.Printf("[worker %s] task %s 意图 #%d 结束: %s (写回 %s)", name, t.ID, intent.ID, state, wrote)
 	e.touch(t.ID)

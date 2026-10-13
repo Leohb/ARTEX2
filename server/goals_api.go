@@ -86,20 +86,17 @@ func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.engine.decInflight(t.ID)
 
-	var body struct {
-		Text      string `json:"text"`
-		VulnClass string `json:"vulnclass"`
-	}
+	var body db.EngagementGoal
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, "invalid JSON")
 		return
 	}
 	text := strings.TrimSpace(body.Text)
-	if text == "" {
-		writeErr(w, 400, "目标内容不能为空")
+	if err := body.Validate(); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
-	payload := map[string]any{"text": text}
+	payload := map[string]any{"text": text, "goal_type": body.GoalType, "required_checks": body.RequiredChecks}
 	if vc := strings.TrimSpace(body.VulnClass); vc != "" {
 		payload["vulnclass"] = vc
 	}

@@ -125,7 +125,7 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 		t.Fatalf("company asset missing from company-scoped agent query: %#v", byCompany)
 	}
 	assetJSON, _ := json.Marshal(assetID)
-	intentID, err := tools.addOneIntent(intentItem{
+	intentID, err := tools.addOneIntent(t.Context(), intentItem{
 		Summary:  "test associated company asset",
 		AssetIDs: []json.RawMessage{assetJSON},
 	})
@@ -163,7 +163,7 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if linked, err := assets.QueryByTask(disabledTask.ID, "root_domain", 10, 0); err != nil || len(linked) != 1 || linked[0].ID != assetID {
 		t.Fatalf("coverage-disabled task asset link=%+v err=%v", linked, err)
 	}
-	disabledIntentID, err := disabledTools.addOneIntent(intentItem{
+	disabledIntentID, err := disabledTools.addOneIntent(t.Context(), intentItem{
 		Summary:  "test associated company asset without coverage metrics",
 		AssetIDs: []json.RawMessage{assetJSON},
 	})
@@ -261,7 +261,7 @@ func TestBlackboardToolsReadDirectSources(t *testing.T) {
 	tools.SetTaskID(current.ID)
 	tools.SetAssetStore(assets, assets.Companies())
 	parentID, _ := json.Marshal(sourceFact)
-	derivedID, err := tools.addOneIntent(intentItem{
+	derivedID, err := tools.addOneIntent(t.Context(), intentItem{
 		Summary: "derive locally from shared fact", ParentIDs: []json.RawMessage{parentID},
 	})
 	if err != nil {
@@ -272,7 +272,7 @@ func TestBlackboardToolsReadDirectSources(t *testing.T) {
 	}
 	beforeFacts, _ := currentStore.ListByKind(db.KindFact, 100)
 	sourceIntentID, _ := json.Marshal(sourceIntent)
-	if _, err := tools.recordOneFact(factItem{Summary: "must not attach to inherited intent", IntentID: json.RawMessage(sourceIntentID)}, sourceIntent); err == nil {
+	if _, err := tools.recordOneFact(t.Context(), factItem{Summary: "must not attach to inherited intent", IntentID: json.RawMessage(sourceIntentID)}, sourceIntent); err == nil {
 		t.Fatal("record_fact must reject inherited intent")
 	}
 	afterFacts, _ := currentStore.ListByKind(db.KindFact, 100)

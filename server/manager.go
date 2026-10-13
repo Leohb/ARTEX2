@@ -78,6 +78,8 @@ type Task struct {
 // updateLifecycle instead of reading or writing the corresponding Task fields
 // directly after the task has been published by Manager.
 type taskLifecycleState struct {
+	Goal          string
+	Description   string
 	Name          string
 	PinnedAt      int64
 	Status        string
@@ -105,6 +107,8 @@ func (t *Task) lifecycleSnapshot() taskLifecycleState {
 
 func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 	return taskLifecycleState{
+		Goal:          t.Goal,
+		Description:   t.Description,
 		Name:          t.Name,
 		PinnedAt:      t.PinnedAt,
 		Status:        t.Status,
@@ -129,6 +133,8 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.lifecycleMu.Lock()
 	state := t.lifecycleSnapshotLocked()
 	update(&state)
+	t.Goal = state.Goal
+	t.Description = state.Description
 	t.Name = state.Name
 	t.PinnedAt = state.PinnedAt
 	t.Status = state.Status
@@ -144,6 +150,15 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.CategoryID = cloneInt64Ptr(state.CategoryID)
 	t.CategoryName = state.CategoryName
 	t.lifecycleMu.Unlock()
+}
+
+func (t *Task) goalText() string        { return t.lifecycleSnapshot().Goal }
+func (t *Task) descriptionText() string { return t.lifecycleSnapshot().Description }
+
+func (t *Task) setContract(goal, description string) {
+	t.updateLifecycle(func(state *taskLifecycleState) {
+		state.Goal, state.Description = goal, description
+	})
 }
 
 type taskLLMState struct {
@@ -1146,6 +1161,8 @@ func (m *Manager) SetTaskPaused(id string, paused bool) error {
 // preservePosition applies only when the row is already queued. A repeated
 // admission keeps its FIFO timestamp; a task that was explicitly paused and is
 // now re-queued receives a fresh tail position.
+// Leaving a persisted user pause resets the no-progress allowance in the same
+// statement. Running wake-ups and automatic FIFO promotions retain their budget.
 func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued bool, mode string, preservePosition bool) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
@@ -1163,7 +1180,11 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 
 	var queuedAt, completedAt, firstRunAt, deadlineAt sql.NullTime
 	var committedMode string
-	err = m.pg.QueryRow(`UPDATE tasks
+	err = m.pg.QueryRow(`WITH previous AS (
+	    SELECT id,paused FROM tasks
+	    WHERE id=$1 AND deleted_at IS NULL AND status=$6 FOR UPDATE
+	), admitted AS (
+	UPDATE tasks t
 	SET status=$2,
 	    completed_at=CASE
 	        WHEN $2 IN ('done','failed','timeout') THEN COALESCE(completed_at, now())
@@ -1189,8 +1210,14 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	        WHEN $6='timeout' AND $2 NOT IN ('done','failed','timeout') THEN NULL
 	        ELSE deadline_at
 	    END
-	WHERE id=$1 AND deleted_at IS NULL AND status=$6
-	RETURNING queued_at, queue_mode, completed_at, first_run_at, deadline_at`, n, status, queued, mode, preservePosition, expectedStatus).
+	FROM previous
+	WHERE t.id=previous.id
+	RETURNING t.id, t.queued_at, t.queue_mode, t.completed_at, t.first_run_at, t.deadline_at, previous.paused AS was_paused
+	), reset_progress AS (
+	    DELETE FROM task_progress p USING admitted
+	    WHERE p.task_id=admitted.id AND admitted.was_paused
+	)
+	SELECT queued_at, queue_mode, completed_at, first_run_at, deadline_at FROM admitted`, n, status, queued, mode, preservePosition, expectedStatus).
 		Scan(&queuedAt, &committedMode, &completedAt, &firstRunAt, &deadlineAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s lifecycle changed before admission (expected status %q)", id, expectedStatus)

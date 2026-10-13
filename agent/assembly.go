@@ -62,6 +62,9 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	if ToolResolve != nil {
 		out = ToolResolve(ctx, agentKey, out)
 	}
+	for i, t := range out {
+		out[i] = withCheckContractSchema(t)
+	}
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
 	out, def.CaseGuidance = findingCaseWorkflow(agentKey, out)
 	for i, t := range out {

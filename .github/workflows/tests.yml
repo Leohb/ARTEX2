@@ -122,6 +122,11 @@ jobs:
           go run ./tests/run.go --module norma -race -shuffle=on -p 1 -count=1 -timeout=4m
           ./agentcore ./harness ./subagent ./tool
           -run 'Test.*Settlement|TestExecuteExtraToolCannotBypassInheritedExecutionGuard|TestInvokeRejectsCanceledExecutionBeforeHostCallback'
+      - name: P0 and P1 task quality race regression
+        run: >-
+          go run ./tests/run.go -race -shuffle=on -p 1 -count=1 -timeout=4m
+          ./agent ./db ./server ./intercept
+          -run 'TestCheck|TestAuthCheckpoint|TestGoalContract|TestGoalProofContains|TestGoalProofMissing|TestProgressIgnores|TestEngagement|TestFindingAssessment|TestFindingEvidence|TestEvidenceHandoff|TestNewGoal|TestManualGoal|TestTaskDTOContract|TestGoalsDecomposition|TestModelFailure|TestP1|TestWorkerSettlement|TestFlagObjective|TestSetGoalsRejects|TestSetGoalsChecks|TestTaskRequestGuidance|TestUserMessage|TestSpawnTask'
       - name: Thinking replay and HTTP history recovery race regression
         run: >-
           go run ./tests/run.go --module norma -race -shuffle=on -p 1 -count=1 -timeout=4m

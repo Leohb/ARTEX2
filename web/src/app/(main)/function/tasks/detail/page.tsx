@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskCompletionBadge, TaskCompletionPanel } from "@/components/task-completion";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
+import { TaskEngagementEditor } from "@/components/task-engagement-editor";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -377,6 +378,7 @@ function TaskDetailInner() {
           </code>
           <Separator orientation="vertical" className="mx-1 hidden h-4 sm:block" />
           <TaskLLMControl task={task} profiles={profiles} onUpdated={load} />
+          <TaskEngagementEditor task={task} onUpdated={load} />
           <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
           <TaskCompletionBadge task={task} />
           {canArchive ? (

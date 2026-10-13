@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
@@ -19,6 +20,17 @@ import (
 type CompletionProposal struct {
 	Remaining []db.CompletionDisposition
 	mu        sync.Mutex
+}
+
+func workerCheckpointSettlement(hasTaskDeadline, clamped bool) *harness.Settlement {
+	settle := wrapupSettlement("worker", []string{"Bash"})
+	if hasTaskDeadline {
+		settle = wrapupSettlementForTask("worker", []string{"Bash"}, clamped)
+	}
+	settle.AllowedTools = append([]string(nil), workerCheckpointTools...)
+	settle.MaxDuration = 60 * time.Second
+	settle.RequestPrompt = "任务正在申请收官。立即停止新的探测、扩展和委派，仅整理已经获得的证据，使用 record_fact/report_finding/insert_assets 保存事实、漏洞和已识别资产；逐项说明已完成、未完成与受阻检查，然后结束。不要将被停止的检查写成已完成。"
+	return settle
 }
 
 func (p *CompletionProposal) setRemaining(work []db.CompletionDisposition) {
@@ -168,4 +180,4 @@ func (p *Planner) ReviewCompletionVerdict(ctx context.Context, taskID int64, ts 
 
 // Checkpoint tools save already obtained evidence; they cannot start another
 // probe, delegate work, change scope or unlock an arbitrary extension tool.
-var workerCheckpointTools = []string{"record_fact", "report_finding", "list_findings", "list_facts", "node_detail", "list_goals", "Read", "Write", "Edit", "LS", "traffic_search", "traffic_get", "traffic_blob", "TodoWrite"}
+var workerCheckpointTools = []string{"insert_assets", "record_fact", "report_finding", "list_findings", "list_facts", "node_detail", "list_goals", "get_finding_record", "get_finding_traffic", "bind_finding_traffic", "update_finding_evidence", "update_finding_report", "Read", "Write", "Edit", "LS", "traffic_search", "traffic_get", "traffic_blob", "TodoWrite"}

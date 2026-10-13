@@ -254,7 +254,7 @@ CREATE TABLE IF NOT EXISTS exploration_edges (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (exploration_id, src_id, rel, dst_id),
     CONSTRAINT ck_edge_noself CHECK (src_id <> dst_id),
-    CONSTRAINT ck_edge_rel CHECK (rel IN ('spawns','derived_from','yields','proves','covers'))
+    CONSTRAINT ck_edge_rel CHECK (rel IN ('spawns','derived_from','yields','proves','covers','supports'))
 );
 CREATE INDEX IF NOT EXISTS idx_expedges_src ON exploration_edges(src_id, rel);
 CREATE INDEX IF NOT EXISTS idx_expedges_dst ON exploration_edges(dst_id, rel);
@@ -266,11 +266,11 @@ BEGIN
     SELECT conname INTO cname FROM pg_constraint
      WHERE conrelid='exploration_edges'::regclass AND contype='c'
        AND pg_get_constraintdef(oid) LIKE '%rel%'
-       AND pg_get_constraintdef(oid) NOT LIKE '%covers%';
+       AND pg_get_constraintdef(oid) NOT LIKE '%supports%';
     IF cname IS NOT NULL THEN
         EXECUTE 'ALTER TABLE exploration_edges DROP CONSTRAINT '||quote_ident(cname);
         ALTER TABLE exploration_edges ADD CONSTRAINT ck_edge_rel
-            CHECK (rel IN ('spawns','derived_from','yields','proves','covers'));
+            CHECK (rel IN ('spawns','derived_from','yields','proves','covers','supports'));
     END IF;
 END $$;
 
@@ -929,6 +929,7 @@ CREATE TABLE IF NOT EXISTS tool_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_tool_usage_tool ON tool_usage(tool_key, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_usage_task ON tool_usage(task_id);
+ALTER TABLE tool_usage ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT 'unknown';
 
 -- =====================================================================
 -- H. 内置工具目录
@@ -1103,6 +1104,7 @@ CREATE TABLE IF NOT EXISTS findings (
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS evidence_audit JSONB NOT NULL DEFAULT '[]';
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);
@@ -1173,6 +1175,20 @@ CREATE TABLE IF NOT EXISTS finding_traffic_bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_finding_traffic_order ON finding_traffic_bindings(finding_id, position, id);
 CREATE INDEX IF NOT EXISTS idx_finding_traffic_snapshot ON finding_traffic_bindings(snapshot_id);
+
+CREATE TABLE IF NOT EXISTS task_progress (
+    task_id BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    fingerprint TEXT NOT NULL,
+    stale_rounds INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS task_engagement_audits (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    previous JSONB NOT NULL,
+    current JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- =====================================================================
 -- M. 后端日志持久化

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -33,6 +34,28 @@ func (s *Server) pgListTools(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{"tools": ts})
+}
+
+func (s *Server) pgToolUsage(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	taskID := int64(0)
+	if raw := r.URL.Query().Get("task_id"); raw != "" {
+		var err error
+		taskID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || taskID <= 0 {
+			writeErr(w, 400, "invalid task_id")
+			return
+		}
+	}
+	rows, err := pg.ToolUsageByAgent(taskID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"usage": rows, "task_id": taskID, "history_note": "旧记录和未返回的调用为 unknown；已归档任务的历史总量仍在 tools.calls，角色/结果明细仅包含当前账本。"})
 }
 
 // pgUpdateTool saves the page-editable fields of a built-in tool: description,

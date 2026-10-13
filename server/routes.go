@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/workspace/download", s.wsDownload)
 	mux.HandleFunc("POST /api/workspace/upload", s.wsUpload)
 	mux.HandleFunc("GET /api/tasks/{id}/scope", s.taskScopeList)
+	mux.HandleFunc("PUT /api/tasks/{id}/engagement", s.updateEngagement)
 	mux.HandleFunc("POST /api/tasks/{id}/scope", s.taskScopeAdd)
 	mux.HandleFunc("DELETE /api/tasks/{id}/scope/{sid}", s.taskScopeDelete)
 	mux.HandleFunc("GET /api/tasks/{id}/goals", s.listGoals) // 目标管理:列出本任务全部目标
@@ -224,6 +225,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/agents/{key}/visibility", s.pgSetAgentVisibility)
 	// 内置工具目录（描述/参数默认值可改、按 agent 绑定；key 与 handler 在代码层）
 	mux.HandleFunc("GET /api/tools", s.pgListTools)
+	mux.HandleFunc("GET /api/tools/usage", s.pgToolUsage)
 	mux.HandleFunc("PUT /api/tools/{key}", s.pgUpdateTool)
 	mux.HandleFunc("POST /api/tools/custom", s.pgCreateCustomTool)
 	mux.HandleFunc("POST /api/tools/custom/test", s.pgTestCustomTool)

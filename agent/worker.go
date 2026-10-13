@@ -299,7 +299,7 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerFindingCoverageGuidance + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir)
+	return body + taskRequestGuidance + workerFindingCoverageGuidance + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir)
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -404,6 +404,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
 	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	sysBody += checkWorkflowGuidance
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
@@ -432,13 +433,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, w.runTimeout)
-	settle := wrapupSettlement("worker", []string{"Bash"})
-	if tc.DeadlineUnix > 0 {
-		settle = wrapupSettlementForTask("worker", []string{"Bash"}, clamped)
-	}
-	settle.AllowedTools = append([]string(nil), workerCheckpointTools...)
-	settle.MaxDuration = 30 * time.Second
-	settle.RequestPrompt = "任务正在申请收官。立即停止新的探测、扩展和委派，仅整理已经获得的证据，使用 record_fact/report_finding 保存事实和漏洞；逐项说明已完成、未完成与受阻检查，然后结束。不要将被停止的检查写成已完成。"
+	settle := workerCheckpointSettlement(tc.DeadlineUnix > 0, clamped)
 	opts := agentcore.Options{
 		Provider:        w.prov,
 		SystemPrompt:    system,

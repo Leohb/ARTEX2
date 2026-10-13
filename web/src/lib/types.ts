@@ -475,6 +475,8 @@ export interface ExplorationNodeQuery {
 
 // 目标管理卡片用的目标(后端已把 payload 拆成 text/vulnclass)。
 export interface TaskGoal {
+  goal_type?: "inspection" | "outcome";
+  required_checks?: string[];
   id: string;
   text: string;
   vulnclass?: string;
@@ -525,6 +527,7 @@ export interface FindingAsset {
 }
 
 export interface Finding {
+  evidence_assessment?: "needs_evidence" | "needs_review" | "supported_for_goal" | "unsupported_for_goal";
   case_id?: string;
   traffic_count?: number;
   evidence_version?: number;
