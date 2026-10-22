@@ -6,6 +6,7 @@ import (
 	"compress/bzip2"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"strings"
 	"unicode/utf8"
@@ -91,6 +92,12 @@ func skillZipEntries(zr *zip.Reader) []skillZipEntry {
 		if strings.HasPrefix(name, "__MACOSX/") || strings.Contains(name, "/__MACOSX/") ||
 			path.Base(name) == ".DS_Store" {
 			continue // macOS 打包残留
+		}
+		// 符号链接 / 设备文件条目一律丢弃。当前写入路径用 os.Create，不会真的造出
+		// 链接（只会落成一个内容为目标路径的普通文件），但那既是垃圾文件，也让
+		// 后续读该 skill 的人误以为那里有链接。不放进树里最省事。
+		if m := f.Mode(); m&(os.ModeSymlink|os.ModeDevice|os.ModeNamedPipe|os.ModeSocket) != 0 {
+			continue
 		}
 		out = append(out, skillZipEntry{f: f, name: name})
 	}

@@ -26,6 +26,10 @@ type Server struct {
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
 
+	// loginThrottle 限制登录尝试频率。用户名固定为 ARTEX，密码下限 8 位，bcrypt
+	// 只挡住离线爆破——在线撞库此前没有任何成本约束。见 authLogin / loginThrottle。
+	loginThrottle loginThrottle
+
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
 	// free slots off the same snapshot and over-promote past the limit.

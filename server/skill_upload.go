@@ -90,22 +90,31 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	skillPath := filepath.Join(s.skillDir, name)
+	// skill 目录内的判断与替换统一走 os.Root：名字本身已由 validSkillName 限死
+	// （不可能带分隔符），但目录里若已存在一个同名符号链接，裸 os.Stat 会跟出去、
+	// os.Rename 会落在链接目标上。
+	skillRoot, err := os.OpenRoot(s.skillDir)
+	if err != nil {
+		writeErr(w, 500, "无法打开 skill 目录："+err.Error())
+		return
+	}
+	defer skillRoot.Close()
+
 	overwrite := r.URL.Query().Get("overwrite") == "true"
-	if _, err := os.Stat(skillPath); err == nil && !overwrite {
+	if _, err := skillRoot.Lstat(name); err == nil && !overwrite {
 		writeErr(w, 409, "skill 已存在："+name+"（如需覆盖请确认后重试）")
 		return
 	}
 
-	// extract into a temp dir first, then atomically swap in — a bad entry aborts
-	// the whole upload without leaving a half-written skill.
-	_ = os.MkdirAll(s.skillDir, 0o755)
+	// 解压先落在 skillDir 内的临时目录，再原子换入。临时目录名由 MkdirTemp 生成，
+	// 不含路径分隔符，所以 root 内相对名可直接用 filepath.Base 取得。
 	tmp, err := os.MkdirTemp(s.skillDir, ".upload-*")
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	defer os.RemoveAll(tmp) // no-op after a successful rename
+	tmpName := filepath.Base(tmp)
+	defer skillRoot.RemoveAll(tmpName) // no-op after a successful rename
 
 	var total int64
 	entries := 0
@@ -167,9 +176,9 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if overwrite {
-		_ = os.RemoveAll(skillPath)
+		_ = skillRoot.RemoveAll(name)
 	}
-	if err := os.Rename(tmp, skillPath); err != nil {
+	if err := skillRoot.Rename(tmpName, name); err != nil {
 		writeErr(w, 500, "安装失败："+err.Error())
 		return
 	}

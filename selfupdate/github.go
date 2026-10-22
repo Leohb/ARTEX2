@@ -12,7 +12,13 @@ import (
 
 // Repo 是发布源。写死而不是做成配置项：更新源可配等于给任何能改配置的人一条
 // 远程代码执行通道，对一个渗透测试平台来说这个口子开不得。
-const Repo = "Autumn-27/artex"
+//
+// 必须指向本仓库自己的 fork：上游 Autumn-27/artex 已被删除，其 GitHub 命名空间
+// 可被任何人重新注册。旧值让「检查更新」在 404 之外还留下一条投毒通道——攻击者
+// 抢注同名仓库并发一个 release，SHA256SUMS 由他自己生成，同源校验形同虚设，
+// 用户在界面上点一下更新就会装上他的二进制。指向自己控制的仓库后，这条链断在
+// 源头：即便别人抢注了上游命名空间，也不会再有本程序去那里取更新。
+const Repo = "Leohb/ARTEX2"
 
 // latestURL 是 GitHub 的"最新正式版"接口。它会自动跳过 prerelease 和 draft。
 const latestURL = "https://api.github.com/repos/" + Repo + "/releases/latest"

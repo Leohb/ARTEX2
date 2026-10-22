@@ -1,8 +1,11 @@
 package server
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -112,24 +115,61 @@ func skillRelPath(file string) (string, string) {
 // walkSkillFiles returns all entries under root relative to root.
 // Directories are included with a trailing "/" so the frontend can distinguish
 // them from files and render empty folders in the tree.
-func walkSkillFiles(root string) ([]string, error) {
+// walkSkillFiles 列出 root 下的所有条目。root 是一个 *os.Root，遍历时同时做两件事：
+// (1) 用 Lstat 不跟随链接，符号链接只作为一条记录出现、不会被展开到树外；
+// (2) 链接目标越出 root 时跳过它。
+//
+// 早先这里用 filepath.WalkDir：它对指向目录的软链接会跟进去，把 skill 目录外
+// （甚至宿主机上）的整棵子树列进文件列表。
+func walkSkillFiles(root *os.Root) ([]string, error) {
 	var entries []string
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil || rel == "." {
+		if p == "." {
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			// 不展开链接：越界的直接丢掉，越界判定交给 root.Lstat 解析。
+			if _, lerr := root.Lstat(p); lerr != nil {
+				return nil
+			}
+			entries = append(entries, path.Clean(p))
 			return nil
 		}
 		if d.IsDir() {
-			entries = append(entries, rel+"/")
+			entries = append(entries, path.Clean(p)+"/")
 		} else {
-			entries = append(entries, rel)
+			entries = append(entries, path.Clean(p))
 		}
 		return nil
 	})
 	return entries, err
+}
+
+// skillRoot pins skillDir for the lifetime of one request. Every file operation
+// then goes through os.Root, which refuses any name (or symlink target) that
+// resolves outside the tree.
+//
+// 早先这些 handler 用 filepath.Join + os.ReadFile/WriteFile/RemoveAll，纯词法约束。
+// skillRelPath 的字符白名单挡得住“..”穿越，但挡不住已存在的符号链接：目录里只要
+// 有一个指向外部的链接，读写就穿出 skillDir。workspace.go 已经改成 os.Root，
+// skill 这一套当时没跟上，这里是补齐。
+func (s *Server) skillRoot(w http.ResponseWriter) (*os.Root, bool) {
+	root, err := os.OpenRoot(s.skillDir)
+	if err != nil {
+		writeErr(w, 500, "无法打开 skill 目录："+err.Error())
+		return nil, false
+	}
+	return root, true
+}
+
+// skillNotFound 把 os.Root 返回的“不存在”与“越界”区分成对应的 HTTP 状态。
+// os.Root 对越界访问报的是 EPERM 风格的错误，直接当 404 处理会把安全拦截
+// 伪装成“文件不存在”，让用户无法判断是路径写错还是被拦下。
+func skillNotFound(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 func (s *Server) fsListFiles(w http.ResponseWriter, r *http.Request) {
@@ -138,12 +178,22 @@ func (s *Server) fsListFiles(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid skill name")
 		return
 	}
-	dirPath := filepath.Join(s.skillDir, name)
-	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+	root, ok := s.skillRoot(w)
+	if !ok {
+		return
+	}
+	defer root.Close()
+	if fi, err := root.Stat(name); err != nil || !fi.IsDir() {
 		writeErr(w, 404, "skill not found")
 		return
 	}
-	files, err := walkSkillFiles(dirPath)
+	skill, err := root.OpenRoot(name)
+	if err != nil {
+		writeErr(w, 404, "skill not found")
+		return
+	}
+	defer skill.Close()
+	files, err := walkSkillFiles(skill)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -165,13 +215,18 @@ func (s *Server) fsReadFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errMsg)
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(s.skillDir, name, file))
-	if os.IsNotExist(err) {
-		writeErr(w, 404, "file not found")
+	root, ok := s.skillRoot(w)
+	if !ok {
 		return
 	}
+	defer root.Close()
+	data, err := root.ReadFile(filepath.Join(name, filepath.FromSlash(file)))
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		if skillNotFound(err) {
+			writeErr(w, 404, "file not found")
+			return
+		}
+		writeErr(w, 403, "拒绝访问：路径越出 skill 目录（可能经过符号链接）")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"content": string(data), "file": file})
@@ -195,19 +250,25 @@ func (s *Server) fsWriteFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	skillPath := filepath.Join(s.skillDir, name)
-	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+	root, ok := s.skillRoot(w)
+	if !ok {
+		return
+	}
+	defer root.Close()
+	if fi, err := root.Stat(name); err != nil || !fi.IsDir() {
 		writeErr(w, 404, "skill not found")
 		return
 	}
-	fullPath := filepath.Join(skillPath, file)
+	full := filepath.Join(name, filepath.FromSlash(file))
 	// create parent subdirectory if needed (e.g. scripts/, references/, assets/)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		writeErr(w, 500, err.Error())
-		return
+	if dir := filepath.Dir(full); dir != name {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			writeErr(w, 403, "拒绝写入：路径越出 skill 目录（可能经过符号链接）")
+			return
+		}
 	}
-	if err := os.WriteFile(fullPath, []byte(body.Content), 0o644); err != nil {
-		writeErr(w, 500, err.Error())
+	if err := root.WriteFile(full, []byte(body.Content), 0o644); err != nil {
+		writeErr(w, 403, "拒绝写入：路径越出 skill 目录（可能经过符号链接）")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -231,13 +292,17 @@ func (s *Server) fsCreateDir(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errMsg)
 		return
 	}
-	skillPath := filepath.Join(s.skillDir, name)
-	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+	root, ok := s.skillRoot(w)
+	if !ok {
+		return
+	}
+	defer root.Close()
+	if fi, err := root.Stat(name); err != nil || !fi.IsDir() {
 		writeErr(w, 404, "skill not found")
 		return
 	}
-	if err := os.MkdirAll(filepath.Join(skillPath, dir), 0o755); err != nil {
-		writeErr(w, 500, err.Error())
+	if err := root.MkdirAll(filepath.Join(name, filepath.FromSlash(dir)), 0o755); err != nil {
+		writeErr(w, 403, "拒绝创建：路径越出 skill 目录（可能经过符号链接）")
 		return
 	}
 	writeJSON(w, 201, map[string]any{"dir": dir})
@@ -254,13 +319,24 @@ func (s *Server) fsDeletePath(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errMsg)
 		return
 	}
-	fullPath := filepath.Join(s.skillDir, name, file)
-	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-		writeErr(w, 404, "not found")
+	root, ok := s.skillRoot(w)
+	if !ok {
 		return
 	}
-	if err := os.RemoveAll(fullPath); err != nil {
-		writeErr(w, 500, err.Error())
+	defer root.Close()
+	full := filepath.Join(name, filepath.FromSlash(file))
+	// Lstat（不跟随链接）先确认存在；RemoveAll 在 os.Root 上只会删 root 内的东西，
+	// 链接本身被删除，不会递归到它的目标。
+	if _, err := root.Lstat(full); err != nil {
+		if skillNotFound(err) {
+			writeErr(w, 404, "not found")
+			return
+		}
+		writeErr(w, 403, "拒绝删除：路径越出 skill 目录（可能经过符号链接）")
+		return
+	}
+	if err := root.RemoveAll(full); err != nil {
+		writeErr(w, 403, "拒绝删除：路径越出 skill 目录（可能经过符号链接）")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"deleted": file})

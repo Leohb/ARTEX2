@@ -73,7 +73,15 @@ func (s *Server) fsListSkills(w http.ResponseWriter, r *http.Request) {
 			node.Compatibility = meta.Compatibility
 			node.MCPs = meta.MCPs
 		}
-		node.Files, _ = walkSkillFiles(filepath.Join(s.skillDir, dirName))
+		// 文件列表同样走 os.Root：这里只读取展示用的文件名，但目录里若存在指向
+		// 外部的符号链接，跟进去就会把宿主机上的文件名列出来。取不到就留空。
+		if sr, serr := os.OpenRoot(s.skillDir); serr == nil {
+			if skillRoot, rerr := sr.OpenRoot(dirName); rerr == nil {
+				node.Files, _ = walkSkillFiles(skillRoot)
+				skillRoot.Close()
+			}
+			sr.Close()
+		}
 		if node.Files == nil {
 			node.Files = []string{}
 		}
@@ -139,12 +147,16 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "description is required")
 		return
 	}
-	skillPath := filepath.Join(s.skillDir, body.Name)
-	if _, err := os.Stat(skillPath); err == nil {
+	skillRoot, ok := s.skillRoot(w)
+	if !ok {
+		return
+	}
+	defer skillRoot.Close()
+	if _, err := skillRoot.Lstat(body.Name); err == nil {
 		writeErr(w, 409, "skill already exists")
 		return
 	}
-	if err := os.MkdirAll(skillPath, 0o755); err != nil {
+	if err := skillRoot.MkdirAll(body.Name, 0o755); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -175,8 +187,8 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 		sb.WriteString("<!-- Describe step-by-step instructions in Markdown. -->\n\n")
 		sb.WriteString("1. \n2. \n3. \n")
 	}
-	if err := os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(sb.String()), 0o644); err != nil {
-		_ = os.RemoveAll(skillPath)
+	if err := skillRoot.WriteFile(filepath.Join(body.Name, "SKILL.md"), []byte(sb.String()), 0o644); err != nil {
+		_ = skillRoot.RemoveAll(body.Name)
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -204,8 +216,13 @@ func (s *Server) fsUpdateSkillMeta(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	skillMD := filepath.Join(s.skillDir, name, "SKILL.md")
-	raw, err := os.ReadFile(skillMD)
+	skillMD := filepath.Join(name, "SKILL.md")
+	skillRoot, ok := s.skillRoot(w)
+	if !ok {
+		return
+	}
+	defer skillRoot.Close()
+	raw, err := skillRoot.ReadFile(skillMD)
 	if err != nil {
 		writeErr(w, 404, "skill not found")
 		return
@@ -215,8 +232,8 @@ func (s *Server) fsUpdateSkillMeta(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if err := os.WriteFile(skillMD, updated, 0o644); err != nil {
-		writeErr(w, 500, err.Error())
+	if err := skillRoot.WriteFile(skillMD, updated, 0o644); err != nil {
+		writeErr(w, 403, "拒绝写入：路径越出 skill 目录（可能经过符号链接）")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -236,7 +253,12 @@ func (s *Server) fsDeleteSkill(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	if err := os.RemoveAll(filepath.Join(s.skillDir, name)); err != nil {
+	skillRoot, ok := s.skillRoot(w)
+	if !ok {
+		return
+	}
+	defer skillRoot.Close()
+	if err := skillRoot.RemoveAll(name); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}

@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -259,7 +262,21 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/auth/login — validates username/password and returns a JWT.
+//
+// 失败尝试按客户端地址计数并退避：用户名固定为 ARTEX、密码下限 8 位，bcrypt
+// 只挡住了离线爆破，在线撞库此前可以无限次尝试。计数在成功登录后清零，因此
+// 正常用户不会因为别人的错误尝试被永久锁在外面。
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
+	// 限流必须在查库之前：一是否则数据库故障时 503 会绕过限流，让攻击者
+	// 在 DB 抖动期间获得无限次尝试（虽然那时本来也验不了密码）；二是限流
+	// 不该依赖后端可用性——它是纯粹的本地资源保护。
+	addr := clientAddr(r)
+	if retryAfter, ok := s.loginThrottle.allow(addr); !ok {
+		secs := int(retryAfter.Seconds() + 0.5)
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		writeErr(w, 429, fmt.Sprintf("登录尝试过于频繁，请 %d 秒后再试", secs))
+		return
+	}
 	pg := s.pg(w)
 	if pg == nil {
 		return
@@ -273,6 +290,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Username != "ARTEX" {
+		s.loginThrottle.fail(addr)
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
@@ -286,6 +304,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+		s.loginThrottle.fail(addr)
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
@@ -294,5 +313,120 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "token 生成失败")
 		return
 	}
+	s.loginThrottle.reset(addr)
 	writeJSON(w, 200, map[string]any{"token": tok})
+}
+
+// --- 登录尝试限流 ---------------------------------------------------------
+//
+// 目标不是挡住分布式撞库（那需要账号级或全局配额，单机无法可靠区分），而是
+// 让「从一台机器连续猜密码」这件事从「无限次」变成「有成本」。策略：同一地址
+// 连续失败 loginMaxFailures 次后开始退避，退避时长按失败次数线性增长并封顶。
+
+const (
+	// loginMaxFailures 是触发退避前允许的连续失败次数。留几次余量是为了不让
+	// 手误输错密码的正常用户立刻被拦。
+	loginMaxFailures = 5
+	// loginBaseBackoff 是第一次触发退避时的等待时长，之后每次失败翻倍。
+	loginBaseBackoff = 2 * time.Second
+	// loginMaxBackoff 封顶。上限存在的意义：退避不该长到让攻击者「等一会再来」
+	// 变成一件划算的事，也不该长到需要管理员介入才能恢复。
+	loginMaxBackoff = 5 * time.Minute
+	// loginAttemptTTL 后没有任何新失败就清掉这条记录，避免 map 无限增长。
+	loginAttemptTTL = 30 * time.Minute
+)
+
+// loginAttemptState 记录单个客户端地址的连续失败情况。
+type loginAttemptState struct {
+	failures int
+	// nextAllowed 之前不接受新的尝试；零值表示立即可试。
+	nextAllowed time.Time
+	// lastSeen 用于惰性清理。
+	lastSeen time.Time
+}
+
+// loginThrottle 是按客户端地址计数的登录限流器。零值可用。
+type loginThrottle struct {
+	mu   sync.Mutex
+	byIP map[string]*loginAttemptState
+}
+
+// clientAddr 取限流用的客户端标识。刻意不信任 X-Forwarded-For：那是攻击者
+// 可控的请求头，信任它等于把限流变成可绕过的装饰。反向代理部署下所有请求会
+// 共用一个地址计数，这是保守方向的偏差（宁可误伤也不漏放）。
+func clientAddr(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// allow 返回是否放行当前尝试；不放行时同时给出建议的等待时长。
+func (t *loginThrottle) allow(addr string) (time.Duration, bool) {
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneLocked(now)
+	st := t.byIP[addr]
+	if st == nil {
+		return 0, true
+	}
+	if now.Before(st.nextAllowed) {
+		return st.nextAllowed.Sub(now), false
+	}
+	return 0, true
+}
+
+// fail 记一次失败，并在超过阈值后设置退避窗口。
+func (t *loginThrottle) fail(addr string) {
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneLocked(now)
+	if t.byIP == nil {
+		t.byIP = map[string]*loginAttemptState{}
+	}
+	st := t.byIP[addr]
+	if st == nil {
+		st = &loginAttemptState{}
+		t.byIP[addr] = st
+	}
+	st.failures++
+	st.lastSeen = now
+	if st.failures >= loginMaxFailures {
+		// 指数退避：首次触发等 base，之后每次翻倍，封顶 maxBackoff。
+		// 用循环而不是移位：移位在次数很大时会在 int64 上溢出成负数，还得额外
+		// 写一段“溢出就当封顶”的特例；循环每一档都实际可达，封顶值也真能碰上。
+		back := loginBaseBackoff
+		for i := 0; i < st.failures-loginMaxFailures; i++ {
+			if back >= loginMaxBackoff {
+				break
+			}
+			back *= 2
+		}
+		if back > loginMaxBackoff {
+			back = loginMaxBackoff
+		}
+		st.nextAllowed = now.Add(back)
+	}
+}
+
+// reset 在登录成功后清掉该地址的失败记录。
+func (t *loginThrottle) reset(addr string) {
+	t.mu.Lock()
+	delete(t.byIP, addr)
+	t.mu.Unlock()
+}
+
+// pruneLocked 惰性清理过期记录。调用方必须已持有 t.mu。
+func (t *loginThrottle) pruneLocked(now time.Time) {
+	if len(t.byIP) == 0 {
+		return
+	}
+	for addr, st := range t.byIP {
+		if now.Sub(st.lastSeen) > loginAttemptTTL && !now.Before(st.nextAllowed) {
+			delete(t.byIP, addr)
+		}
+	}
 }
