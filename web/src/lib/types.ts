@@ -266,6 +266,13 @@ export interface Asset {
   category?: string;
   app_description?: string;
   app_icp?: string;
+  /** 应用清单主数据（type=app）。ITAM 是 CMDB 业务主键。 */
+  itam_id?: string;
+  app_short_name?: string;
+  app_full_name?: string;
+  dept?: string;
+  app_owner?: string;
+  ops_owner?: string;
   url?: string;
   service_type?: string;
   service_name?: string;
@@ -323,6 +330,25 @@ export interface AssetTreeNode {
   edge_kind?: string;
   depth: number;
   children?: AssetTreeNode[];
+}
+
+/** 应用清单列表的一行。 */
+export interface AppListItem extends Asset {
+  /** 关联应用数量（同企业下的其它应用） */
+  related_apps: number;
+}
+
+/** 应用详情：主数据 + 关联的全部资产。 */
+export interface AppDetail {
+  app: Asset;
+  domains: Asset[];
+  websites: Asset[];
+  services: Asset[];
+  public_ips: Asset[];
+  dmz_ips: Asset[];
+  hosts: Asset[];
+  nats: Asset[];
+  related_apps: Asset[];
 }
 
 /** WEB 资产列表的一行：按域名聚合的暴露面统计。 */

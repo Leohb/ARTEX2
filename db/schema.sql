@@ -189,6 +189,21 @@ ALTER TABLE assets ADD COLUMN IF NOT EXISTS hostname  TEXT;
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS os        TEXT;
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS host_role TEXT;  -- web / db / dc / jump …
 
+-- 应用清单（type='app'）的主数据。
+--
+-- ITAM 编号是应用在 CMDB 里的业务主键，人工维护、全局唯一。它与其他字段
+-- 的区别是「别人引用应用时用这个编号」——所以单独建唯一索引，并允许为空
+-- （扫描出来的应用未必有 ITAM 号）。
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS itam_id        TEXT;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS app_short_name TEXT;  -- 英文短名
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS app_full_name  TEXT;  -- 英文全称
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS dept           TEXT;  -- 归属部门
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS app_owner      TEXT;  -- 应用负责人
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS ops_owner      TEXT;  -- 运维负责人
+CREATE UNIQUE INDEX IF NOT EXISTS uq_av2_app_itam
+    ON assets(itam_id) WHERE type='app' AND itam_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_av2_app_dept ON assets(dept) WHERE type='app';
+
 -- NAT 映射的端点。一条 nat 资产表示 “内网 A 的 x 端口映射到 外网 B 的 y 端口”。
 -- 之所以用字段而不是拆表：它的生命周期与其它资产一样（都要能被任务关联、
 -- 打标签、逐层追查），拆出去反而要多一套 CRUD。

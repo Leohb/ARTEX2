@@ -388,3 +388,131 @@ func (s *Server) assetScopeCounts(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, counts)
 }
+
+// DELETE /api/web-assets — 按域名批量删除 WEB 资产（该域名下的 service 与 endpoint）。
+//
+// 与 DELETE /api/assets 的区别：那个按 asset id 删单条，而 WEB 列表以域名为
+// 主键，勾选一行意味着「这个站点」，删除必须按域名展开。
+func (s *Server) deleteWebAssets(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	var req struct {
+		Domains []string `json:"domains"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Domains) == 0 {
+		writeErr(w, 400, "domains required")
+		return
+	}
+	n, err := as.DeleteByDomains(req.Domains)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": n})
+}
+
+// =====================================================================
+// 应用清单（ITAM 主数据）
+// =====================================================================
+
+// GET /api/apps
+func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, total, err := as.ListApps(limit, offset)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"apps": rows, "total": total})
+}
+
+// GET /api/apps/{id} — 应用详情，含关联的全部资产。
+func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	id, ok := pathInt(r, "id")
+	if !ok {
+		writeErr(w, 400, "invalid app id")
+		return
+	}
+	d, err := as.AppDetail(id)
+	if err != nil {
+		if errors.Is(err, db.ErrAssetNotFound) {
+			writeErr(w, 404, "应用不存在")
+			return
+		}
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, d)
+}
+
+// POST /api/apps — 新增/更新应用主数据（按 ITAM 编号幂等）。
+func (s *Server) upsertApp(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	var req struct {
+		ItamID      string `json:"itam_id"`
+		AppName     string `json:"app_name"`
+		ShortName   string `json:"app_short_name"`
+		FullName    string `json:"app_full_name"`
+		Dept        string `json:"dept"`
+		AppOwner    string `json:"app_owner"`
+		OpsOwner    string `json:"ops_owner"`
+		Description string `json:"app_description"`
+		Category    string `json:"category"`
+		CompanyID   *int64 `json:"company_id"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
+	id, err := as.UpsertAppMaster(db.UpsertAppMasterReq{
+		ItamID: req.ItamID, AppName: req.AppName, ShortName: req.ShortName,
+		FullName: req.FullName, Dept: req.Dept, AppOwner: req.AppOwner,
+		OpsOwner: req.OpsOwner, Description: req.Description, Category: req.Category,
+	})
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	// 企业归属单独写：UpsertAppMaster 只管主数据，不掺归属逻辑。
+	if req.CompanyID != nil {
+		_, _ = as.PatchAsset(id, db.AssetPatch{CompanyID: req.CompanyID})
+	}
+	app, err := as.GetByID(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, app)
+}

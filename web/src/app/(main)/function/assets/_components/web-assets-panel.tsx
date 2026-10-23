@@ -4,12 +4,13 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import { ChevronLeftIcon, ChevronRightIcon, ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, ExternalLinkIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
@@ -30,6 +31,9 @@ export function WebAssetsPanel() {
   const [size, setSize] = React.useState(50);
   const [loading, setLoading] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
+  // 勾选以域名为键：WEB 列表的主键就是域名，一行代表一个站点。
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = React.useState(false);
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -50,6 +54,45 @@ export function WebAssetsPanel() {
     load();
   }, [load]);
 
+  const toggleSelect = (domain: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(domain)) next.delete(domain);
+      else next.add(domain);
+      return next;
+    });
+  };
+
+  const pageDomains = rows.map((r) => r.domain);
+  const allSelected = pageDomains.length > 0 && pageDomains.every((d) => selected.has(d));
+  const someSelected = pageDomains.some((d) => selected.has(d));
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) pageDomains.forEach((d) => next.delete(d));
+      else pageDomains.forEach((d) => next.add(d));
+      return next;
+    });
+  };
+
+  const removeSelected = async () => {
+    const domains = Array.from(selected);
+    if (domains.length === 0) return;
+    if (!window.confirm(`删除 ${domains.length} 个站点下的全部服务与 URL 路径？此操作不可撤销。`)) return;
+    setDeleting(true);
+    try {
+      const res = await api.deleteWebAssets(domains);
+      toast.success(`已删除 ${res.deleted} 条资产记录`);
+      setSelected(new Set());
+      load();
+    } catch (e) {
+      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const pageCount = Math.max(1, Math.ceil(total / size));
   const start = total === 0 ? 0 : page * size + 1;
   const end = page * size + rows.length;
@@ -60,9 +103,16 @@ export function WebAssetsPanel() {
         <span className="text-xs text-muted-foreground">
           按域名聚合，共 <span className="tabular-nums">{total}</span> 个 WEB 资产
         </span>
-        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-          <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} /> 刷新
-        </Button>
+        <div className="flex items-center gap-2">
+          {selected.size > 0 && (
+            <Button variant="destructive" size="sm" onClick={removeSelected} disabled={deleting}>
+              <Trash2Icon className="size-3.5" /> 删除已选 ({selected.size})
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} /> 刷新
+          </Button>
+        </div>
       </div>
 
       <Card className="flex min-h-0 flex-1 flex-col overflow-hidden py-0">
@@ -70,6 +120,12 @@ export function WebAssetsPanel() {
           <Table>
             <TableHeader className="sticky top-0 z-10 bg-card">
               <TableRow>
+                <TableHead className="w-8 pr-0">
+                  <Checkbox
+                    checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                    onCheckedChange={toggleSelectAll}
+                  />
+                </TableHead>
                 <TableHead>域名</TableHead>
                 <TableHead className="w-24 text-right">服务</TableHead>
                 <TableHead className="w-24 text-right">URL路径</TableHead>
@@ -82,7 +138,10 @@ export function WebAssetsPanel() {
             </TableHeader>
             <TableBody>
               {rows.map((w) => (
-                <TableRow key={w.domain} className="cursor-pointer hover:bg-muted/40">
+                <TableRow key={w.domain} className={selected.has(w.domain) ? "bg-muted/40" : undefined}>
+                  <TableCell className="w-8 pr-0">
+                    <Checkbox checked={selected.has(w.domain)} onCheckedChange={() => toggleSelect(w.domain)} />
+                  </TableCell>
                   <TableCell>
                     <Link
                       prefetch={false}
@@ -142,7 +201,7 @@ export function WebAssetsPanel() {
               ))}
               {rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">
                     {loaded ? "暂无 WEB 资产（HTTP 协议的公网服务）。" : "加载中…"}
                   </TableCell>
                 </TableRow>

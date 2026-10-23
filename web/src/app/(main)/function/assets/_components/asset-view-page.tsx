@@ -48,6 +48,7 @@ import { parseCompanyScopeText } from "@/lib/company-scope";
 import type { Asset, AssetRelations, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { AppsPanel } from "./apps-panel";
 import { AssetCard, Chips, PlaceholderCard, statusTone } from "./asset-table";
 import { type AssetView, assetViewIcon } from "./asset-views";
 import { WebAssetsPanel } from "./web-assets-panel";
@@ -595,51 +596,8 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             </div>
           )}
 
-          {/* 应用清单 */}
-          {renderKey === "app" && (
-            <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-              {searchBox}
-              <AssetCard
-                cols={["", "应用名", "Bundle ID", "分类", "ICP 备案", "标签", ""]}
-                loaded={loaded}
-                total={total}
-                page={page}
-                size={size}
-                onSize={setSize}
-                onPage={setPage}
-                rows={currentRows}
-                selected={selected}
-                onToggleAll={(ids) => toggleSelectAll(ids)}
-              >
-                {slice(tabData("app")).map((a) => (
-                  <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
-                    <TableCell className="w-8 pr-0">
-                      <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
-                    </TableCell>
-                    <TableCell className="font-medium text-xs">{a.app_name || "—"}</TableCell>
-                    <TableCell className="font-mono text-xs">{a.bundle_id || "—"}</TableCell>
-                    <TableCell className="text-xs">{a.category || "—"}</TableCell>
-                    <TableCell className="text-xs">{a.app_icp || "—"}</TableCell>
-                    <TableCell>
-                      <TagsCell tags={a.tags} />
-                    </TableCell>
-                    <TableCell className="w-8 pl-0">
-                      <EditAssetButton a={a} onSaved={refresh} />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => openDelete([a.id])}
-                        aria-label={`删除资产 ${a.app_name || a.id}`}
-                      >
-                        <Trash2Icon className="size-3.5" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </AssetCard>
-            </div>
-          )}
+          {/* 应用清单：ITAM 主数据，独立面板 */}
+          {renderKey === "app" && <AppsPanel />}
 
           {/* 公网服务 */}
           {renderKey === "service" && (

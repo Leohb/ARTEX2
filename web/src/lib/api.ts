@@ -14,6 +14,8 @@ import type {
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
+  AppDetail,
+  AppListItem,
   AssetRelations,
   AssetTreeNode,
   AssetInterceptRule,
@@ -554,6 +556,16 @@ export const api = {
       total: r?.total ?? 0,
     })),
   webAssetDetail: (domain: string) => get<WebAssetDetail>(`/web-assets/${encodeURIComponent(domain)}`),
+  // ---- 应用清单 ----
+  apps: (limit = 50, offset = 0) =>
+    get<{ apps: AppListItem[]; total: number }>(`/apps?limit=${limit}&offset=${offset}`).then((r) => ({
+      apps: r?.apps ?? [],
+      total: r?.total ?? 0,
+    })),
+  appDetail: (id: number) => get<AppDetail>(`/apps/${id}`),
+  upsertApp: (body: Record<string, unknown>) => post<Asset>("/apps", body),
+  deleteWebAssets: (domains: string[]) =>
+    http<{ deleted: number }>("/web-assets", { method: "DELETE", body: JSON.stringify({ domains }) }),
   setAssetScope: (id: number, scope: string) =>
     http<{ ok: boolean }>(`/assets/${id}/scope`, { method: "PATCH", body: JSON.stringify({ ip_scope: scope }) }),
   // ---- 自定义标签 ----

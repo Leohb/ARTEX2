@@ -39,6 +39,13 @@ type Asset struct {
 	Category       string `json:"category,omitempty"`
 	AppDescription string `json:"app_description,omitempty"`
 	AppICP         string `json:"app_icp,omitempty"`
+	// 应用清单主数据（type=app）。ITAM 是 CMDB 业务主键。
+	ItamID       string `json:"itam_id,omitempty"`
+	AppShortName string `json:"app_short_name,omitempty"`
+	AppFullName  string `json:"app_full_name,omitempty"`
+	Dept         string `json:"dept,omitempty"`
+	AppOwner     string `json:"app_owner,omitempty"`
+	OpsOwner     string `json:"ops_owner,omitempty"`
 	// service fields
 	URL           string           `json:"url,omitempty"`
 	ServiceType   string           `json:"service_type,omitempty"`
@@ -1206,6 +1213,8 @@ SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
        array_to_json(tags)::text,
+       COALESCE(itam_id,''), COALESCE(app_short_name,''), COALESCE(app_full_name,''),
+       COALESCE(dept,''), COALESCE(app_owner,''), COALESCE(ops_owner,''),
        COALESCE(ip_scope,''), parent_service_id,
        COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
        COALESCE(nat_internal_ip,''), nat_internal_port,
@@ -1243,6 +1252,8 @@ func (s *AssetStore) QueryByCompany(companyID int64, typ string, limit, offset i
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
        array_to_json(tags)::text,
+       COALESCE(itam_id,''), COALESCE(app_short_name,''), COALESCE(app_full_name,''),
+       COALESCE(dept,''), COALESCE(app_owner,''), COALESCE(ops_owner,''),
        COALESCE(ip_scope,''), parent_service_id,
        COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
        COALESCE(nat_internal_ip,''), nat_internal_port,
@@ -1301,6 +1312,8 @@ func (s *AssetStore) QueryByTask(taskID int64, typ string, limit, offset int) ([
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
        array_to_json(tags)::text,
+       COALESCE(itam_id,''), COALESCE(app_short_name,''), COALESCE(app_full_name,''),
+       COALESCE(dept,''), COALESCE(app_owner,''), COALESCE(ops_owner,''),
        COALESCE(ip_scope,''), parent_service_id,
        COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
        COALESCE(nat_internal_ip,''), nat_internal_port,
@@ -1505,6 +1518,8 @@ const assetSelectCols = `SELECT id, type, company_id, array_to_json(task_ids)::t
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
        array_to_json(tags)::text,
+       COALESCE(itam_id,''), COALESCE(app_short_name,''), COALESCE(app_full_name,''),
+       COALESCE(dept,''), COALESCE(app_owner,''), COALESCE(ops_owner,''),
        COALESCE(ip_scope,''), parent_service_id,
        COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
        COALESCE(nat_internal_ip,''), nat_internal_port,
@@ -1633,7 +1648,11 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 			&a.URL, &a.ServiceType, &a.ServiceName,
 			&a.FaviconMMH3, &statusCode, &contentLength,
 			&a.PageTitle, &techsRaw, &authRaw,
+			// 顺序必须与 assetSelectCols 完全一致：
+			// tags → 应用主数据 → ip_scope/parent → host → nat
 			&a.Method, &paramsRaw, &extraRaw, &a.LastSeen, &tagsRaw,
+			&a.ItamID, &a.AppShortName, &a.AppFullName,
+			&a.Dept, &a.AppOwner, &a.OpsOwner,
 			&a.IPScope, &parentServiceID,
 			&a.Hostname, &a.OS, &a.HostRole,
 			&a.NatInternalIP, &natInPort,

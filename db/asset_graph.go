@@ -925,3 +925,282 @@ func (s *AssetStore) CountPublicIPs() (int, error) {
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM assets WHERE type='ip' AND ip_scope='public'`).Scan(&n)
 	return n, err
 }
+
+// DeleteByDomains 删除一组域名下的全部 service 与 endpoint 资产。
+//
+// WEB 资产列表以域名为主键（一行 = 一个站点），勾选与删除的语义也应该是
+// 域名而不是单条 service 行——否则删掉一个 service 后同一域名的其它记录
+// 还在，列表里那一行看起来「删了但没消失」。
+func (s *AssetStore) DeleteByDomains(domains []string) (int64, error) {
+	if len(domains) == 0 {
+		return 0, nil
+	}
+	res, err := s.db.Exec(`
+		DELETE FROM assets
+		WHERE domain = ANY($1::text[])
+		  AND type IN ('service','endpoint')`, domains)
+	if err != nil {
+		return 0, fmt.Errorf("delete by domains: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// =====================================================================
+// 应用清单（type=app）的人工维护
+// =====================================================================
+//
+// 与 Agent 用的 UpsertApp 分开：那条按 bundle_id / app_name 去重、服务于扫描
+// 结果登记；这条以 ITAM 编号为主键，服务于人在「应用清单」页维护主数据。
+
+// UpsertAppMasterReq 是应用主数据的写入参数。
+type UpsertAppMasterReq struct {
+	ItamID      string
+	AppName     string // 中文名
+	ShortName   string // 英文短名
+	FullName    string // 英文全称
+	Dept        string
+	AppOwner    string
+	OpsOwner    string
+	Description string
+	Category    string
+}
+
+// UpsertAppMaster 按 ITAM 编号写入/更新一条应用主数据。
+//
+// ITAM 是业务主键：有它就按它 upsert，没有则退化成按应用名匹配（允许先登记
+// 应用、后补编号）。两者都空直接报错——没有主键的记录无法被关联。
+func (s *AssetStore) UpsertAppMaster(req UpsertAppMasterReq) (int64, error) {
+	itam := strings.TrimSpace(req.ItamID)
+	name := strings.TrimSpace(req.AppName)
+	if itam == "" && name == "" {
+		return 0, fmt.Errorf("ITAM 编号与应用名称至少填一个")
+	}
+
+	var id int64
+	var err error
+	if itam != "" {
+		err = s.db.QueryRow(`
+			INSERT INTO assets (type, itam_id, app_name, app_short_name, app_full_name,
+			                    dept, app_owner, ops_owner, app_description, category, task_ids)
+			VALUES ('app',$1,$2,$3,$4,$5,$6,$7,$8,$9, ARRAY[]::bigint[])
+			ON CONFLICT (itam_id) WHERE type='app' AND itam_id IS NOT NULL
+			DO UPDATE SET
+				app_name        = COALESCE(NULLIF(EXCLUDED.app_name,''),        assets.app_name),
+				app_short_name  = COALESCE(NULLIF(EXCLUDED.app_short_name,''),  assets.app_short_name),
+				app_full_name   = COALESCE(NULLIF(EXCLUDED.app_full_name,''),   assets.app_full_name),
+				dept            = COALESCE(NULLIF(EXCLUDED.dept,''),            assets.dept),
+				app_owner       = COALESCE(NULLIF(EXCLUDED.app_owner,''),       assets.app_owner),
+				ops_owner       = COALESCE(NULLIF(EXCLUDED.ops_owner,''),       assets.ops_owner),
+				app_description = COALESCE(NULLIF(EXCLUDED.app_description,''), assets.app_description),
+				category        = COALESCE(NULLIF(EXCLUDED.category,''),        assets.category),
+				updated_at      = now()
+			RETURNING id`,
+			itam, name, req.ShortName, req.FullName, req.Dept,
+			req.AppOwner, req.OpsOwner, req.Description, req.Category).Scan(&id)
+	} else {
+		// 没有 ITAM 号：按应用名找，找不到就插一条。
+		if e := s.db.QueryRow(`SELECT id FROM assets WHERE type='app' AND app_name=$1 LIMIT 1`, name).Scan(&id); e == nil {
+			_, err = s.db.Exec(`
+				UPDATE assets SET
+					app_short_name  = COALESCE(NULLIF($2,''), app_short_name),
+					app_full_name   = COALESCE(NULLIF($3,''), app_full_name),
+					dept            = COALESCE(NULLIF($4,''), dept),
+					app_owner       = COALESCE(NULLIF($5,''), app_owner),
+					ops_owner       = COALESCE(NULLIF($6,''), ops_owner),
+					app_description = COALESCE(NULLIF($7,''), app_description),
+					category        = COALESCE(NULLIF($8,''), category),
+					updated_at      = now()
+				WHERE id=$1`,
+				id, req.ShortName, req.FullName, req.Dept, req.AppOwner,
+				req.OpsOwner, req.Description, req.Category)
+		} else {
+			err = s.db.QueryRow(`
+				INSERT INTO assets (type, app_name, app_short_name, app_full_name,
+				                    dept, app_owner, ops_owner, app_description, category, task_ids)
+				VALUES ('app',$1,$2,$3,$4,$5,$6,$7,$8, ARRAY[]::bigint[])
+				RETURNING id`,
+				name, req.ShortName, req.FullName, req.Dept, req.AppOwner,
+				req.OpsOwner, req.Description, req.Category).Scan(&id)
+		}
+	}
+	if err != nil {
+		return 0, fmt.Errorf("upsert app master: %w", err)
+	}
+	return id, nil
+}
+
+// AppListItem 是应用清单列表的一行。
+type AppListItem struct {
+	*Asset
+	// RelatedApps 是「关联应用」数量。应用之间通过共享资产（同一域名/IP/主机）
+	// 间接相关——这是 CMDB 里最常见的关联来源，不需要额外维护关系表。
+	RelatedApps int `json:"related_apps"`
+}
+
+// ListApps 返回应用清单，按关联资产数量降序。
+func (s *AssetStore) ListApps(limit, offset int) ([]*AppListItem, int, error) {
+	var total int
+	if err := s.db.QueryRow(`SELECT count(*) FROM assets WHERE type='app'`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count apps: %w", err)
+	}
+	if offset >= total {
+		return []*AppListItem{}, total, nil
+	}
+	rows, err := s.db.Query(assetSelectCols+`
+		WHERE type='app'
+		ORDER BY (SELECT count(*) FROM task_asset_links t WHERE t.asset_id = assets.id) DESC, id
+		LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list apps: %w", err)
+	}
+	assets, err := scanAssets(rows)
+	rows.Close()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 关联应用数：同属一个企业的其它应用数量。
+	//
+	// 这是当前数据模型能给出的最强关联——资产没有直接指向应用的字段（扫描
+	// 发现的是资产，应用是人维护的业务视角），所以用企业归属作为共同父节点。
+	out := make([]*AppListItem, 0, len(assets))
+	for _, a := range assets {
+		var n int
+		if a.CompanyID != nil {
+			_ = s.db.QueryRow(`SELECT count(*) FROM assets
+				WHERE type='app' AND company_id=$1 AND id <> $2`, *a.CompanyID, a.ID).Scan(&n)
+		}
+		out = append(out, &AppListItem{Asset: a, RelatedApps: n})
+	}
+	return out, total, nil
+}
+
+// AppDetail 是应用详情：主数据 + 关联的全部资产。
+type AppDetail struct {
+	App         *Asset   `json:"app"`
+	Domains     []*Asset `json:"domains"`
+	Websites    []*Asset `json:"websites"`
+	Services    []*Asset `json:"services"`
+	PublicIPs   []*Asset `json:"public_ips"`
+	DmzIPs      []*Asset `json:"dmz_ips"`
+	Hosts       []*Asset `json:"hosts"`
+	Nats        []*Asset `json:"nats"`
+	RelatedApps []*Asset `json:"related_apps"`
+}
+
+// AppDetail 取一个应用及其关联资产。
+//
+// 关联口径：资产表上的 company_id 指向应用所属企业时视为关联。这是当前数据
+// 模型能给出的最强关联——资产没有直接指向应用的字段（扫描发现的是资产，
+// 应用是人维护的业务视角）。若应用没有企业归属，则退回按应用 ICP 匹配。
+func (s *AssetStore) AppDetail(id int64) (*AppDetail, error) {
+	app, err := s.GetByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if app.Type != "app" {
+		return nil, ErrAssetNotFound
+	}
+	d := &AppDetail{App: app, Domains: []*Asset{}, Websites: []*Asset{}, Services: []*Asset{},
+		PublicIPs: []*Asset{}, DmzIPs: []*Asset{}, Hosts: []*Asset{}, Nats: []*Asset{}, RelatedApps: []*Asset{}}
+
+	// 取关联资产的公共条件：优先 company_id，其次 app_icp。
+	load := func(where string, args ...any) []*Asset {
+		rows, err := s.db.Query(assetSelectCols+` WHERE `+where, args...)
+		if err != nil {
+			return []*Asset{}
+		}
+		defer rows.Close()
+		out, _ := scanAssets(rows)
+		if out == nil {
+			return []*Asset{}
+		}
+		return out
+	}
+
+	if app.CompanyID == nil {
+		return d, nil
+	}
+	cid := *app.CompanyID
+	d.Domains = load(`type='root_domain' AND company_id=$1 ORDER BY domain`, cid)
+	d.Websites = load(`type='service' AND service_type='http' AND company_id=$1 ORDER BY domain, url`, cid)
+	d.Services = load(`type='service' AND service_type='other' AND company_id=$1 ORDER BY ip, port`, cid)
+	d.RelatedApps = load(`type='app' AND company_id=$1 AND id <> $2 ORDER BY app_name`, cid, id)
+
+	// IP / 主机 / NAT 常常没有 company_id：企业 scope 一般只配域名，扫描出来的
+	// IP 靠 scope 归因匹配不上。所以这里沿资产图扩展——从该企业的域名出发，
+	// 走到解析到的 IP、IP 上跑的主机、以及两端的 NAT。这比要求用户给每个 IP
+	// 手工配 scope 现实得多。
+	//
+	// 用递归 CTE 从企业域名集合出发，沿 belongs_to / resolves_to / runs_on /
+	// maps_to / exposed_via 展开到任意深度（最多 6 层防环），再按类型分桶。
+	// CTE 必须放在 SELECT 最前面，不能嵌在 IN (...) 里——那样 Postgres 会当成
+	// 语法错误，而错误被忽略后表现为「关联资产永远为空」。
+	//
+	// 先取 id 集合，再用 assetSelectCols 查完整行：把 30+ 列的清单拼进 CTE
+	// 末尾既难读又容易与 scanAssets 的列序脱节。
+	// 递归 CTE 只允许一个递归项，所以正反两个方向各写一条，结果 UNION 起来。
+	// 正向：沿 dst 展开（从域名走到 IP/主机）；反向：沿 src 展开（从 IP 回到
+	// 引用它的子域/NAT）。两个方向都需要——只看正向会漏掉「NAT 指向本企业 IP」
+	// 这种上游关系。
+	idRows, idErr := s.db.Query(`
+		WITH RECURSIVE
+		seeds AS (
+			SELECT id FROM assets
+			WHERE company_id = $1 AND type IN ('root_domain','subdomain','service','ip')
+		),
+		down AS (
+			SELECT id, ARRAY[id] AS path FROM seeds
+			UNION ALL
+			SELECT e.dst_id, d.path || e.dst_id
+			FROM down d JOIN asset_edges e ON e.src_id = d.id
+			WHERE array_length(d.path, 1) < 6 AND NOT (e.dst_id = ANY(d.path))
+		),
+		-- 反向遍历的种子必须包含正向到达的节点：NAT 的边是「NAT → IP」，
+		-- 只有从 IP 出发才走得到 NAT，而 IP 通常是正向从子域走过来的。
+		up AS (
+			SELECT id, ARRAY[id] AS path FROM (SELECT id FROM seeds UNION SELECT id FROM down) s0
+			UNION ALL
+			SELECT e.src_id, u.path || e.src_id
+			FROM up u JOIN asset_edges e ON e.dst_id = u.id
+			WHERE array_length(u.path, 1) < 8 AND NOT (e.src_id = ANY(u.path))
+		)
+		-- 第三段：从 up 到达的节点（典型是 NAT）再正向展开一次，才能走到
+		-- NAT 另一侧的内网 IP 与主机。没有这一段，DMZ/主机永远进不了应用详情。
+		, down2 AS (
+			SELECT id, ARRAY[id] AS path FROM (SELECT id FROM seeds UNION SELECT id FROM down UNION SELECT id FROM up) s1
+			UNION ALL
+			SELECT e.dst_id, d.path || e.dst_id
+			FROM down2 d JOIN asset_edges e ON e.src_id = d.id
+			WHERE array_length(d.path, 1) < 8 AND NOT (e.dst_id = ANY(d.path))
+		)
+		SELECT DISTINCT id FROM (
+			SELECT id FROM down UNION SELECT id FROM up UNION SELECT id FROM down2
+		) t`, cid)
+	if idErr == nil {
+		var ids []int64
+		for idRows.Next() {
+			var one int64
+			if err := idRows.Scan(&one); err == nil {
+				ids = append(ids, one)
+			}
+		}
+		idRows.Close()
+		if len(ids) > 0 {
+			related := load(`id = ANY($1::bigint[])`, ids)
+			for _, a := range related {
+				switch {
+				case a.Type == "ip" && a.IPScope == "dmz":
+					d.DmzIPs = append(d.DmzIPs, a)
+				case a.Type == "ip":
+					d.PublicIPs = append(d.PublicIPs, a)
+				case a.Type == "host":
+					d.Hosts = append(d.Hosts, a)
+				case a.Type == "nat":
+					d.Nats = append(d.Nats, a)
+				}
+			}
+		}
+	}
+	return d, nil
+}

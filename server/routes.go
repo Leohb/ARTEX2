@@ -110,6 +110,12 @@ func (s *Server) Handler() http.Handler {
 	// 放在 /api/assets/ 之外的独立前缀：/api/assets/web/{domain} 会与
 	// /api/assets/{id}/relations 冲突（Go mux 认为 web 也可能是 {id}）。
 	mux.HandleFunc("GET /api/web-assets", s.listWebAssets)
+	mux.HandleFunc("DELETE /api/web-assets", s.deleteWebAssets)
+
+	// 应用清单（ITAM 主数据）
+	mux.HandleFunc("GET /api/apps", s.listApps)
+	mux.HandleFunc("POST /api/apps", s.upsertApp)
+	mux.HandleFunc("GET /api/apps/{id}", s.getApp)
 	mux.HandleFunc("GET /api/web-assets/{domain}", s.getWebAsset)
 	mux.HandleFunc("GET /api/assets/{id}", s.getAsset)
 	mux.HandleFunc("PATCH /api/assets/{id}", s.patchAsset)
