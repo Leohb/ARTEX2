@@ -116,6 +116,19 @@ type assetInputItem struct {
 	// ---- endpoint ----
 	Method string           `json:"method"`
 	Params []map[string]any `json:"params"`
+
+	// ---- host（内网/DMZ 主机）----
+	Hostname string `json:"hostname"`
+	OS       string `json:"os"`
+	HostRole string `json:"host_role"`
+	IPScope  string `json:"ip_scope"` // public/private/dmz/loopback
+
+	// ---- nat（NAT 映射）----
+	NatInternalIP   string `json:"nat_internal_ip"`
+	NatInternalPort int    `json:"nat_internal_port"`
+	NatExternalIP   string `json:"nat_external_ip"`
+	NatExternalPort int    `json:"nat_external_port"`
+	NatProtocol     string `json:"nat_protocol"`
 }
 
 // insertAssets is the unified insert_assets agent tool.
@@ -134,7 +147,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				"items": obj(map[string]any{
 					"type": map[string]any{
 						"type":        "string",
-						"enum":        []string{"ip", "subdomain", "app", "service", "endpoint"},
+						"enum":        []string{"ip", "subdomain", "app", "service", "endpoint", "host", "nat"},
 						"description": "资产类型（root_domain 由人工维护，Agent 不可写，故不在枚举内）",
 					},
 					// root_domain / subdomain
@@ -197,6 +210,17 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 						"description": "请求参数列表，每条含 location(query/body/header/path)/name/value/type（可选，追加不覆盖）",
 						"items":       map[string]any{"type": "object"},
 					},
+					// host（内网/DMZ 主机）
+					"hostname":  str("主机名（host 类型必填，与 ip 至少填一个）"),
+					"os":        str("操作系统，如 Linux/Windows Server 2019（可选）"),
+					"host_role": str("主机角色，如 web/db/dc/jump（可选）"),
+					"ip_scope":  str("网络位置：public/private/dmz/loopback（可选，留空按 IP 自动判断；DMZ 必须显式填 dmz）"),
+					// nat（NAT 映射）
+					"nat_internal_ip":   str("NAT 映射的内网地址（nat 类型必填，与 nat_external_ip 至少填一个）"),
+					"nat_internal_port": intp("内网端口（可选）"),
+					"nat_external_ip":   str("NAT 映射的外网地址（可选）"),
+					"nat_external_port": intp("外网端口（可选）"),
+					"nat_protocol":      str("协议 tcp/udp，默认 tcp（可选）"),
 				}, "type"),
 			},
 		}, "assets"),
@@ -332,6 +356,26 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 							TaskID:      taskID,
 						})
 					}
+
+				case "host":
+					id, err = t.as.UpsertHost(db.UpsertHostReq{
+						Hostname: item.Hostname,
+						IP:       item.IP,
+						OS:       item.OS,
+						Role:     item.HostRole,
+						Scope:    item.IPScope,
+						TaskID:   taskID,
+					})
+
+				case "nat":
+					id, err = t.as.UpsertNAT(db.UpsertNATReq{
+						InternalIP:   item.NatInternalIP,
+						InternalPort: item.NatInternalPort,
+						ExternalIP:   item.NatExternalIP,
+						ExternalPort: item.NatExternalPort,
+						Protocol:     item.NatProtocol,
+						TaskID:       taskID,
+					})
 
 				case "endpoint":
 					id, err = t.as.UpsertEndpoint(db.UpsertEndpointReq{

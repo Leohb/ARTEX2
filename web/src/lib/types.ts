@@ -279,11 +279,50 @@ export interface Asset {
   params?: Record<string, unknown>[];
   /** 自定义标签名数组（标签定义见 Tag） */
   tags?: string[];
+  /** 网络位置：public / private / dmz / loopback */
+  ip_scope?: string;
+  /** 接口所属服务（endpoint 专用） */
+  parent_service_id?: number;
+  /** host 类型：内网/DMZ 主机 */
+  hostname?: string;
+  os?: string;
+  host_role?: string;
+  /** nat 类型：NAT 映射两端 */
+  nat_internal_ip?: string;
+  nat_internal_port?: number;
+  nat_external_ip?: string;
+  nat_external_port?: number;
+  nat_protocol?: string;
   extra?: Record<string, unknown>;
   last_seen: string;
   task_source?: string;
   task_source_summary?: string;
   task_source_node_id?: number;
+}
+
+/** 资产图上的一条边（/api/assets/{id}/relations）。 */
+export interface AssetEdge {
+  id: number;
+  src_id: number;
+  dst_id: number;
+  kind: string;
+  dst?: { id: number; type: string; label: string };
+}
+
+export interface AssetRelations {
+  upstream: AssetEdge[];
+  downstream: AssetEdge[];
+}
+
+/** 逐层追查树的一个节点（/api/assets/tree）。 */
+export interface AssetTreeNode {
+  id: number;
+  type: string;
+  label: string;
+  parent_id?: number;
+  edge_kind?: string;
+  depth: number;
+  children?: AssetTreeNode[];
 }
 
 /** 自定义标签定义（/api/tags）。资产上存的是标签名，不是 id。 */

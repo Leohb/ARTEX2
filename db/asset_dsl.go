@@ -43,6 +43,11 @@ var knownStringFields = map[string]string{
 	"method":       "method",
 	"service_type": "service_type",
 	"record_type":  "record_type",
+	"ip_scope":     "ip_scope",
+	"hostname":     "hostname",
+	"os":           "os",
+	"host_role":    "host_role",
+	"nat_protocol": "nat_protocol",
 }
 
 // knownArrayFields maps DSL field name → SQL column name (array).

@@ -54,6 +54,20 @@ type Asset struct {
 	Params []map[string]any `json:"params,omitempty"`
 	// 自定义标签（标签名数组，见 db/tags.go 的设计说明）
 	Tags []string `json:"tags"`
+	// 网络位置：public / private / dmz / loopback。见 db/asset_graph.go。
+	IPScope string `json:"ip_scope,omitempty"`
+	// 接口所属服务（endpoint 专用）。见 db/asset_graph.go。
+	ParentServiceID *int64 `json:"parent_service_id,omitempty"`
+	// host 类型（内网/DMZ 主机）
+	Hostname string `json:"hostname,omitempty"`
+	OS       string `json:"os,omitempty"`
+	HostRole string `json:"host_role,omitempty"`
+	// nat 类型（NAT 映射）
+	NatInternalIP   string `json:"nat_internal_ip,omitempty"`
+	NatInternalPort *int   `json:"nat_internal_port,omitempty"`
+	NatExternalIP   string `json:"nat_external_ip,omitempty"`
+	NatExternalPort *int   `json:"nat_external_port,omitempty"`
+	NatProtocol     string `json:"nat_protocol,omitempty"`
 	// meta
 	Extra             map[string]any `json:"extra,omitempty"`
 	LastSeen          string         `json:"last_seen"`
@@ -385,8 +399,8 @@ func (s *AssetStore) UpsertIP(req UpsertIPReq) (int64, error) {
 
 	var id int64
 	err = s.tx.QueryRow(`
-INSERT INTO assets(type, ip, c_segment, bound_domains, open_ports, company_id, company_source, task_ids)
-VALUES ('ip', $1, $2::cidr, $3::text[], $4::jsonb[], $5, 'scope', $6::bigint[])
+INSERT INTO assets(type, ip, c_segment, bound_domains, open_ports, company_id, company_source, task_ids, ip_scope)
+VALUES ('ip', $1, $2::cidr, $3::text[], $4::jsonb[], $5, 'scope', $6::bigint[], $7)
 ON CONFLICT (ip) WHERE type = 'ip' DO UPDATE SET
     bound_domains = (SELECT ARRAY(SELECT DISTINCT unnest(assets.bound_domains || EXCLUDED.bound_domains))),
     open_ports    = (
@@ -409,7 +423,12 @@ ON CONFLICT (ip) WHERE type = 'ip' DO UPDATE SET
     END,
     task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
     last_seen  = now()
-RETURNING id`, req.IP, csegVal, boundDomains, openPortsJSON, companyID, taskIDs).Scan(&id)
+RETURNING id`, req.IP, csegVal, boundDomains, openPortsJSON, companyID, taskIDs,
+		ClassifyIPScope(req.IP)).Scan(&id)
+	if err == nil {
+		// 新 IP 可能被已有的子域/NAT 引用；补一次入边，让图立刻可用。
+		_ = s.BackfillEdges(id)
+	}
 	return id, err
 }
 
@@ -561,7 +580,28 @@ ON CONFLICT (domain, COALESCE(record_type,'')) WHERE type = 'subdomain' DO UPDAT
     extra        = assets.extra || EXCLUDED.extra,
     last_seen    = now()
 RETURNING id`, domain, rootDomain, recordType, recordValueArr, ipVal, csegVal, icpVal, companyID, taskIDs).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	// 建边：子域 → 根域、子域 → 解析到的 IP。父记录在上面已由 side effect 建好。
+	// domain == rootDomain 时这条记录本身是裸域，没有父，不建自环边。
+	if rootDomain != "" && rootDomain != domain {
+		if rid, e := s.UpsertRootDomain(UpsertRootDomainReq{Domain: rootDomain, TaskID: req.TaskID}); e == nil {
+			_ = s.LinkAssets(id, rid, EdgeBelongsTo)
+		}
+	}
+	for _, rv := range req.RecordValue {
+		for _, part := range strings.Split(rv, ",") {
+			candidate := strings.TrimSpace(part)
+			if candidate == "" || net.ParseIP(candidate) == nil {
+				continue
+			}
+			if pid := s.findByTypeAndColumn("ip", "ip", candidate); pid > 0 {
+				_ = s.LinkAssets(id, pid, EdgeResolvesTo)
+			}
+		}
+	}
+	return id, nil
 }
 
 // =====================================================================
@@ -807,7 +847,7 @@ RETURNING id`,
 	}
 
 	// side effects: register root_domain + subdomain as their own assets too
-	s.linkHostAssets(domain, rootDomain, req.TaskID)
+	s.linkHostAssets(domain, rootDomain, req.TaskID, id)
 	if req.IP != "" {
 		var boundDomains []string
 		if domain != "" {
@@ -957,19 +997,57 @@ RETURNING id`,
 			TaskID:       req.TaskID,
 		})
 	}
-	s.linkHostAssets(domain, rootDomain, req.TaskID)
+	s.linkHostAssets(domain, rootDomain, req.TaskID, id)
 	return id, nil
 }
 
 // linkHostAssets ensures a service/endpoint's host is also registered as its own
 // root_domain and (when it's a real subdomain, not the apex or an IP) subdomain
 // asset — so those asset types stay populated and can anchor task scope. Best-effort.
-func (s *AssetStore) linkHostAssets(domain, rootDomain string, taskID int64) {
+// linkHostAssets 为一条服务/接口补齐它的宿主资产，并连上真实的边。
+//
+// 改造前它只负责「顺手把父记录也插一条」——两条记录之间没有指针，父子关系
+// 全靠字符串相同这一点在查询时重新推断。现在它同时建边，selfID 就是刚写入的
+// 那条服务/接口，边建在它和宿主之间。
+func (s *AssetStore) linkHostAssets(domain, rootDomain string, taskID int64, selfID int64) {
+	// 层级必须唯一：一个资产只能有一个 belongs_to 父，否则树里会重复出现。
+	//
+	// 优先挂到更具体的宿主（子域），没有子域时才挂到根域。改造前这里两条边
+	// 都建，结果服务同时是根域和子域的子节点，递归展开时被访问两次。
+	// 根域始终要确保存在（同步变更追踪也依赖这次 Upsert）。
+	var rootID int64
 	if rootDomain != "" {
-		_, _ = s.UpsertRootDomain(UpsertRootDomainReq{Domain: rootDomain, TaskID: taskID})
+		if rid, err := s.UpsertRootDomain(UpsertRootDomainReq{Domain: rootDomain, TaskID: taskID}); err == nil {
+			rootID = rid
+		}
 	}
 	if domain != "" && domain != rootDomain && net.ParseIP(domain) == nil {
-		_, _ = s.UpsertSubdomain(UpsertSubdomainReq{Domain: domain, TaskID: taskID})
+		// 复用已存在的同域记录，而不是再造一条。
+		//
+		// subdomain 的唯一键是 (domain, COALESCE(record_type,''))：同一个域名带
+		// 不同 record_type 是两行。这里传空 record_type 会造出「api.x.com (A)」
+		// 和「api.x.com ()」两条记录，图里成了两个节点，树上同样的行出现两次。
+		//
+		// 仍然调用 Upsert（而不是直接查 id 复用）：Upsert 内部会 captureSyncAsset，
+		// 同步变更追踪依赖这次捕获来记录「本次同步影响了哪些资产」。查到 id 后
+		// 若与 Upsert 返回的不同，说明命中了带 record_type 的那条，取它。
+		// 先查：命中就不再 Upsert，否则会造出「api.x.com ()」这条空 record_type
+		// 的重复行，图上出现两个同域节点。但同步变更追踪需要这次调用被记一笔，
+		// 所以命中时手动补一次 captureSyncAsset。
+		sid := s.findSubdomainByDomain(domain)
+		if sid > 0 {
+			_ = s.captureSyncAsset("type='subdomain' AND domain=$1", domain)
+		} else if newID, err := s.UpsertSubdomain(UpsertSubdomainReq{Domain: domain, TaskID: taskID}); err == nil {
+			sid = newID
+		}
+		// 层级唯一：挂在子域下就不再挂根域，否则树里重复。
+		if sid > 0 {
+			_ = s.LinkAssets(selfID, sid, EdgeBelongsTo)
+			return
+		}
+	}
+	if rootID > 0 {
+		_ = s.LinkAssets(selfID, rootID, EdgeBelongsTo)
 	}
 }
 
@@ -1083,9 +1161,23 @@ RETURNING id`,
 	}
 	// side effects: endpoint previously registered none — register its host as
 	// root_domain + subdomain(+IP) so those asset types get populated too.
-	s.linkHostAssets(domain, rootDomain, req.TaskID)
+	// 层级只能有一个父。优先挂到所属服务（这是「WEB资产 → URL 路径」的主链路），
+	// 没有服务时才退回挂宿主域名/根域。
+	//
+	// 改造前这里既 linkHostAssets 又挂 service，接口在树上出现两次。
+	parentSet := false
+	if sid := s.findUniqueServiceByURL(normURL); sid > 0 {
+		_, _ = s.exec(`UPDATE assets SET parent_service_id=$2 WHERE id=$1 AND parent_service_id IS NULL`, id, sid)
+		_ = s.LinkAssets(id, sid, EdgeBelongsTo)
+		parentSet = true
+	}
+	if !parentSet {
+		s.linkHostAssets(domain, rootDomain, req.TaskID, id)
+	}
 	if req.IP != "" {
-		_, _ = s.UpsertIP(UpsertIPReq{IP: req.IP, TaskID: req.TaskID})
+		if pid, e := s.UpsertIP(UpsertIPReq{IP: req.IP, TaskID: req.TaskID}); e == nil {
+			_ = s.LinkAssets(id, pid, EdgeRunsOn)
+		}
 	}
 	return id, nil
 }
@@ -1113,7 +1205,12 @@ SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
-       array_to_json(tags)::text
+       array_to_json(tags)::text,
+       COALESCE(ip_scope,''), parent_service_id,
+       COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
+       COALESCE(nat_internal_ip,''), nat_internal_port,
+       COALESCE(nat_external_ip,''), nat_external_port,
+       COALESCE(nat_protocol,'')
 FROM assets
 WHERE type = $1
 ORDER BY last_seen DESC, id DESC
@@ -1145,7 +1242,12 @@ func (s *AssetStore) QueryByCompany(companyID int64, typ string, limit, offset i
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
-       array_to_json(tags)::text
+       array_to_json(tags)::text,
+       COALESCE(ip_scope,''), parent_service_id,
+       COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
+       COALESCE(nat_internal_ip,''), nat_internal_port,
+       COALESCE(nat_external_ip,''), nat_external_port,
+       COALESCE(nat_protocol,'')
 FROM assets WHERE company_id = $1`
 	args := []any{companyID}
 	if typ != "" {
@@ -1198,7 +1300,12 @@ func (s *AssetStore) QueryByTask(taskID int64, typ string, limit, offset int) ([
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
-       array_to_json(tags)::text
+       array_to_json(tags)::text,
+       COALESCE(ip_scope,''), parent_service_id,
+       COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
+       COALESCE(nat_internal_ip,''), nat_internal_port,
+       COALESCE(nat_external_ip,''), nat_external_port,
+       COALESCE(nat_protocol,'')
 FROM assets WHERE $1 = ANY(task_ids)`
 	args := []any{taskID}
 	if typ != "" {
@@ -1397,7 +1504,12 @@ const assetSelectCols = `SELECT id, type, company_id, array_to_json(task_ids)::t
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
-       array_to_json(tags)::text
+       array_to_json(tags)::text,
+       COALESCE(ip_scope,''), parent_service_id,
+       COALESCE(hostname,''), COALESCE(os,''), COALESCE(host_role,''),
+       COALESCE(nat_internal_ip,''), nat_internal_port,
+       COALESCE(nat_external_ip,''), nat_external_port,
+       COALESCE(nat_protocol,'')
 FROM assets`
 
 // GetByIDs returns assets with the given ids (order preserved by id array order).
@@ -1508,6 +1620,7 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 	for rows.Next() {
 		a := &Asset{}
 		var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, authRaw, paramsRaw, extraRaw, tagsRaw []byte
+		var parentServiceID, natInPort, natExPort sql.NullInt64
 		var port, statusCode sql.NullInt64
 		var contentLength sql.NullInt64
 		var companyID sql.NullInt64
@@ -1521,6 +1634,11 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 			&a.FaviconMMH3, &statusCode, &contentLength,
 			&a.PageTitle, &techsRaw, &authRaw,
 			&a.Method, &paramsRaw, &extraRaw, &a.LastSeen, &tagsRaw,
+			&a.IPScope, &parentServiceID,
+			&a.Hostname, &a.OS, &a.HostRole,
+			&a.NatInternalIP, &natInPort,
+			&a.NatExternalIP, &natExPort,
+			&a.NatProtocol,
 		); err != nil {
 			return nil, err
 		}
@@ -1570,6 +1688,18 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 		}
 		if a.Tags == nil {
 			a.Tags = []string{}
+		}
+		if parentServiceID.Valid {
+			v := parentServiceID.Int64
+			a.ParentServiceID = &v
+		}
+		if natInPort.Valid {
+			v := int(natInPort.Int64)
+			a.NatInternalPort = &v
+		}
+		if natExPort.Valid {
+			v := int(natExPort.Int64)
+			a.NatExternalPort = &v
 		}
 		out = append(out, a)
 	}

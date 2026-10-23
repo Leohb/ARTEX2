@@ -45,7 +45,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
-import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
+import type { Asset, AssetRelations, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { AssetCard, Chips, PlaceholderCard, statusTone } from "./asset-table";
@@ -596,12 +596,12 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             </div>
           )}
 
-          {/* 公网服务 */}
-          {view.key === "service" && (
+          {/* NAT 映射 */}
+          {view.key === "nat" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", "标签", ""]}
+                cols={["", "内网地址", "内网端口", "外网地址", "外网端口", "协议", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -611,16 +611,84 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                 rows={currentRows}
                 selected={selected}
                 onToggleAll={(ids) => toggleSelectAll(ids)}
+                emptyHint="暂无 NAT 映射。可用「新增」登记，或让 Agent 在内网探测时写入。"
               >
-                {slice(tabData("service")).map((a) => (
-                  <ServiceRow
-                    key={a.id}
-                    a={a}
-                    selected={selected}
-                    onToggle={toggleSelect}
-                    onDelete={openDelete}
-                    onSaved={refresh}
-                  />
+                {slice(tabData("nat")).map((a) => (
+                  <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
+                    <TableCell className="w-8 pr-0">
+                      <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs font-medium">{a.nat_internal_ip || "—"}</TableCell>
+                    <TableCell className="font-mono text-xs tabular-nums">{a.nat_internal_port ?? "—"}</TableCell>
+                    <TableCell className="font-mono text-xs font-medium">{a.nat_external_ip || "—"}</TableCell>
+                    <TableCell className="font-mono text-xs tabular-nums">{a.nat_external_port ?? "—"}</TableCell>
+                    <TableCell className="text-xs uppercase">{a.nat_protocol || "tcp"}</TableCell>
+                    <TableCell>
+                      <TagsCell tags={a.tags} />
+                    </TableCell>
+                    <TableCell className="w-8 pl-0">
+                      <EditAssetButton a={a} onSaved={refresh} />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => openDelete([a.id])}
+                        aria-label={`删除 NAT 映射 ${a.id}`}
+                      >
+                        <Trash2Icon className="size-3.5" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </AssetCard>
+            </div>
+          )}
+
+          {/* 主机资产 */}
+          {view.key === "host" && (
+            <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
+              {searchBox}
+              <AssetCard
+                cols={["", "主机名", "IP", "操作系统", "角色", "区域", "标签", ""]}
+                loaded={loaded}
+                total={total}
+                page={page}
+                size={size}
+                onSize={setSize}
+                onPage={setPage}
+                rows={currentRows}
+                selected={selected}
+                onToggleAll={(ids) => toggleSelectAll(ids)}
+                emptyHint="暂无主机资产。内网/DMZ 主机可由「新增」登记，或让 Agent 在内网探测时写入。"
+              >
+                {slice(tabData("host")).map((a) => (
+                  <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
+                    <TableCell className="w-8 pr-0">
+                      <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs font-medium">{a.hostname || "—"}</TableCell>
+                    <TableCell className="font-mono text-xs">{a.ip || "—"}</TableCell>
+                    <TableCell className="text-xs">{a.os || "—"}</TableCell>
+                    <TableCell className="text-xs">{a.host_role || "—"}</TableCell>
+                    <TableCell>
+                      <ScopeBadge scope={a.ip_scope} />
+                    </TableCell>
+                    <TableCell>
+                      <TagsCell tags={a.tags} />
+                    </TableCell>
+                    <TableCell className="w-8 pl-0">
+                      <EditAssetButton a={a} onSaved={refresh} />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => openDelete([a.id])}
+                        aria-label={`删除主机 ${a.hostname || a.id}`}
+                      >
+                        <Trash2Icon className="size-3.5" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
                 ))}
               </AssetCard>
             </div>
@@ -1171,6 +1239,20 @@ const EDIT_FIELDS: Record<string, { key: string; label: string; placeholder?: st
     { key: "service_name", label: "服务名" },
     { key: "page_title", label: "页面标题" },
   ],
+  nat: [
+    { key: "nat_internal_ip", label: "内网地址" },
+    { key: "nat_internal_port", label: "内网端口" },
+    { key: "nat_external_ip", label: "外网地址" },
+    { key: "nat_external_port", label: "外网端口" },
+    { key: "nat_protocol", label: "协议" },
+  ],
+  host: [
+    { key: "hostname", label: "主机名" },
+    { key: "ip", label: "IP 地址" },
+    { key: "os", label: "操作系统" },
+    { key: "host_role", label: "角色" },
+    { key: "ip_scope", label: "区域" },
+  ],
 };
 
 function AssetEditDialog({
@@ -1289,6 +1371,7 @@ function AssetEditDialog({
             )}
           </Field>
         </FieldGroup>
+        <AssetRelationsPanel assetId={a.id} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             取消
@@ -1299,6 +1382,81 @@ function AssetEditDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// AssetRelationsPanel 展示这条资产在图上的上下游，用于逐层追查：
+// 从公网 IP 反查「谁解析到它 / 哪条 NAT 暴露它」，从服务下钻「它有哪些接口」。
+function AssetRelationsPanel({ assetId }: { assetId: number }) {
+  const [rel, setRel] = React.useState<AssetRelations | null>(null);
+  const [err, setErr] = React.useState("");
+
+  React.useEffect(() => {
+    let live = true;
+    api
+      .assetRelations(assetId)
+      .then((r) => {
+        if (live) setRel(r);
+      })
+      .catch((e) => {
+        if (live) setErr(String((e as Error)?.message ?? e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [assetId]);
+
+  if (err) return <div className="text-xs text-destructive">关系加载失败：{err}</div>;
+  if (!rel) return <div className="text-xs text-muted-foreground">加载关系中…</div>;
+
+  const hasAny = (rel.upstream?.length ?? 0) + (rel.downstream?.length ?? 0) > 0;
+  if (!hasAny) {
+    return <div className="text-xs text-muted-foreground">这条资产还没有关联到其它资产。</div>;
+  }
+
+  const EDGE_LABEL: Record<string, string> = {
+    belongs_to: "属于",
+    resolves_to: "解析到",
+    runs_on: "运行于",
+    maps_to: "映射到",
+    exposed_via: "暴露于",
+  };
+
+  return (
+    <div className="space-y-2 rounded-md border p-3 text-xs">
+      {rel.upstream?.length > 0 && (
+        <div>
+          <div className="mb-1 font-medium text-muted-foreground">上游（谁指向它）</div>
+          <ul className="space-y-0.5">
+            {rel.upstream.map((e) => (
+              <li key={e.id} className="flex items-center gap-1.5">
+                <Badge variant="secondary" className="text-[10px]">
+                  {e.dst?.type}
+                </Badge>
+                <span className="font-mono">{e.dst?.label}</span>
+                <span className="text-muted-foreground">—{EDGE_LABEL[e.kind] ?? e.kind}→ 本条</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {rel.downstream?.length > 0 && (
+        <div>
+          <div className="mb-1 font-medium text-muted-foreground">下游（本条指向谁）</div>
+          <ul className="space-y-0.5">
+            {rel.downstream.map((e) => (
+              <li key={e.id} className="flex items-center gap-1.5">
+                <span className="text-muted-foreground">本条 —{EDGE_LABEL[e.kind] ?? e.kind}→</span>
+                <Badge variant="secondary" className="text-[10px]">
+                  {e.dst?.type}
+                </Badge>
+                <span className="font-mono">{e.dst?.label}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1421,4 +1579,40 @@ const CREATE_FIELDS: Record<
     { key: "port", label: "端口（非 HTTP 服务）", placeholder: "22", number: true },
   ],
   web: [{ key: "url", label: "URL", required: true, placeholder: "https://example.com" }],
+  nat: [
+    { key: "nat_internal_ip", label: "内网地址", required: true, placeholder: "10.10.1.20" },
+    { key: "nat_internal_port", label: "内网端口", placeholder: "8080", number: true },
+    { key: "nat_external_ip", label: "外网地址", placeholder: "203.0.113.50" },
+    { key: "nat_external_port", label: "外网端口", placeholder: "443", number: true },
+    { key: "nat_protocol", label: "协议", placeholder: "tcp / udp" },
+  ],
+  host: [
+    { key: "hostname", label: "主机名", required: true, placeholder: "dmz-web-01" },
+    { key: "ip", label: "IP 地址", placeholder: "10.10.1.20" },
+    { key: "os", label: "操作系统", placeholder: "Ubuntu 22.04" },
+    { key: "host_role", label: "角色", placeholder: "web / db / dc / jump" },
+    { key: "ip_scope", label: "区域", placeholder: "dmz / private / public" },
+  ],
 };
+
+// ScopeBadge 显示网络位置。DMZ 需要人工标注，所以颜色上与公网/内网区分开。
+function ScopeBadge({ scope }: { scope?: string }) {
+  if (!scope) return <span className="text-xs text-muted-foreground">—</span>;
+  const tone: Record<string, string> = {
+    public: "border-emerald-500/40 text-emerald-600",
+    dmz: "border-amber-500/40 text-amber-600",
+    private: "border-slate-400/40 text-slate-600",
+    loopback: "border-slate-400/40 text-slate-500",
+  };
+  const label: Record<string, string> = {
+    public: "公网",
+    dmz: "DMZ",
+    private: "内网",
+    loopback: "回环",
+  };
+  return (
+    <Badge variant="outline" className={cn("text-[10px]", tone[scope])}>
+      {label[scope] ?? scope}
+    </Badge>
+  );
+}

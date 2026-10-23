@@ -205,3 +205,106 @@ func (s *Server) deleteTag(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"deleted": id})
 }
+
+// GET /api/assets/{id}/relations — 单条资产的上游/下游边。
+// 用于资产详情页「这个 IP 被哪些子域解析到」「这个服务下有哪些接口」。
+func (s *Server) assetRelations(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	id, ok := pathInt(r, "id")
+	if !ok {
+		writeErr(w, 400, "invalid asset id")
+		return
+	}
+	rel, err := as.Relations(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, rel)
+}
+
+// GET /api/assets/tree?root=<id>&root=<id>&depth=<n>
+//
+// 从给定根节点向下展开资产树。不传 root 时，用「所有没有上游 belongs_to 的
+// 资产」当根（即企业/根域名这类顶层），这样前端打开页面就能看到全貌。
+func (s *Server) assetTree(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	q := r.URL.Query()
+	var roots []int64
+	for _, raw := range q["root"] {
+		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+			roots = append(roots, id)
+		}
+	}
+	depth, _ := strconv.Atoi(q.Get("depth"))
+	if len(roots) == 0 {
+		// 顶层 = 没有任何 belongs_to 上游的资产。
+		// 注意判定的是 src_id = a.id：一条边 src→dst 表示 src 属于 dst，所以
+		// 「自己是 src」意味着它挂在别人下面，不是顶层。
+		rows, err := s.m.pg.Query(`
+			SELECT a.id FROM assets a
+			WHERE NOT EXISTS (
+				SELECT 1 FROM asset_edges e WHERE e.src_id = a.id AND e.kind = 'belongs_to'
+			)
+			ORDER BY a.type, a.id
+			LIMIT 200`)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err == nil {
+				roots = append(roots, id)
+			}
+		}
+		if len(roots) == 0 {
+			writeJSON(w, 200, map[string]any{"roots": []any{}})
+			return
+		}
+	}
+	tree, err := as.AssetTree(roots, depth)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if tree == nil {
+		tree = []*db.AssetTreeNode{}
+	}
+	writeJSON(w, 200, map[string]any{"roots": tree})
+}
+
+// PATCH /api/assets/{id}/scope — 人工标注网络位置（把私网 IP 标成 DMZ 等）。
+func (s *Server) setAssetIPScope(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	id, ok := pathInt(r, "id")
+	if !ok {
+		writeErr(w, 400, "invalid asset id")
+		return
+	}
+	var req struct {
+		Scope string `json:"ip_scope"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := as.SetIPScope(id, req.Scope); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "ip_scope": req.Scope})
+}

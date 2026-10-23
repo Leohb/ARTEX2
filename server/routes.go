@@ -103,8 +103,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
+	// 资产树/关系必须注册在 /api/assets/{id} 之前？Go 1.22 mux 按字面量优先，
+	// 字面量段更长者胜，所以 /tree、/relations 不会被 {id} 吞掉（已实测）。
+	mux.HandleFunc("GET /api/assets/tree", s.assetTree)
 	mux.HandleFunc("GET /api/assets/{id}", s.getAsset)
 	mux.HandleFunc("PATCH /api/assets/{id}", s.patchAsset)
+	mux.HandleFunc("GET /api/assets/{id}/relations", s.assetRelations)
+	mux.HandleFunc("PATCH /api/assets/{id}/scope", s.setAssetIPScope)
 
 	// 自定义标签：标签定义本身（名字/颜色/说明）的管理入口。
 	mux.HandleFunc("GET /api/tags", s.listTags)

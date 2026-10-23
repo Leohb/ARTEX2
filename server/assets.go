@@ -486,6 +486,17 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 			// endpoint
 			Method string           `json:"method"`
 			Params []map[string]any `json:"params"`
+			// host（内网/DMZ 主机）
+			Hostname string `json:"hostname"`
+			OS       string `json:"os"`
+			HostRole string `json:"host_role"`
+			IPScope  string `json:"ip_scope"`
+			// nat（NAT 映射）
+			NatInternalIP   string `json:"nat_internal_ip"`
+			NatInternalPort int    `json:"nat_internal_port"`
+			NatExternalIP   string `json:"nat_external_ip"`
+			NatExternalPort int    `json:"nat_external_port"`
+			NatProtocol     string `json:"nat_protocol"`
 			// 自定义标签（人工在资产页新增时可带；Agent 路径不传）
 			Tags []string `json:"tags"`
 		} `json:"assets"`
@@ -529,6 +540,17 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 			} else {
 				id, err = as.UpsertOtherService(db.UpsertOtherServiceReq{Domain: a.Domain, IP: a.IP, Port: a.Port, ServiceName: a.ServiceName, Auth: a.Auth, TaskID: req.TaskID})
 			}
+		case "host":
+			id, err = as.UpsertHost(db.UpsertHostReq{
+				Hostname: a.Hostname, IP: a.IP, OS: a.OS,
+				Role: a.HostRole, Scope: a.IPScope, TaskID: req.TaskID,
+			})
+		case "nat":
+			id, err = as.UpsertNAT(db.UpsertNATReq{
+				InternalIP: a.NatInternalIP, InternalPort: a.NatInternalPort,
+				ExternalIP: a.NatExternalIP, ExternalPort: a.NatExternalPort,
+				Protocol: a.NatProtocol, TaskID: req.TaskID,
+			})
 		case "endpoint":
 			svcIP := a.ServiceIP
 			if svcIP == "" {

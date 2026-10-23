@@ -39,8 +39,11 @@ CREATE TRIGGER trg_companies_upd BEFORE UPDATE ON companies
 
 CREATE TABLE IF NOT EXISTS assets (
     id              BIGSERIAL PRIMARY KEY,
+    -- host  = 内网/DMZ 主机（有主机名、操作系统等主机维度信息）
+    -- nat   = 一条 NAT 映射规则（内网地址端口 → 外网地址端口）
+    -- 新增类型靠下面的 ALTER 回填约束（CREATE TABLE 里的 CHECK 对旧库不生效）。
     type            TEXT NOT NULL CHECK (type IN (
-                        'root_domain','ip','subdomain','app','service','endpoint'
+                        'root_domain','ip','subdomain','app','service','endpoint','host','nat'
                     )),
     company_id      BIGINT REFERENCES companies(id) ON DELETE SET NULL,
     -- explicit: caller/user selected the company; scope: derived from company_scope.
@@ -130,6 +133,152 @@ ALTER TABLE assets ALTER COLUMN tags SET DEFAULT '{}';
 ALTER TABLE assets ALTER COLUMN tags SET NOT NULL;
 -- GIN 让「按标签筛选」与「包含任一标签」走索引，而不是全表扫。
 CREATE INDEX IF NOT EXISTS idx_av2_tags ON assets USING GIN(tags);
+
+-- =====================================================================
+-- 资产关系图（邻接表）
+-- =====================================================================
+--
+-- 改造前，资产之间的关系只靠字符串字段巧合表达：subdomain.root_domain 里写一个
+-- 域名、service.ip 里写一个 IP，查询时再用 map 拼回去。后果是：父记录改名或删除
+-- 后，子记录仍指向一个不存在的目标；而且“关系”无法表达非树形结构（一个 IP 上
+-- 跑多个服务、一个服务对应多条 NAT 映射）。
+--
+-- asset_edges 把关系显式存下来。删除节点时边级联消失，不会再出现幽灵引用。
+-- 保留 assets 上的 domain/ip/root_domain 字段：它们仍是“这个资产自己的属性”，
+-- 只是不再承担关系职责。
+CREATE TABLE IF NOT EXISTS asset_edges (
+    id         BIGSERIAL PRIMARY KEY,
+    src_id     BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    dst_id     BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    -- belongs_to: 子域 → 根域 / 服务 → 主机 / 接口 → 服务
+    -- resolves_to: 子域 → IP（DNS 解析）
+    -- runs_on:     服务 → IP（监听在哪个地址）
+    -- maps_to:     NAT 映射：内网地址 → 外网地址
+    -- exposed_via: 内网主机 → 公网服务（通过哪条链路暴露）
+    kind       TEXT NOT NULL CHECK (kind IN (
+                    'belongs_to','resolves_to','runs_on','maps_to','exposed_via'
+               )),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 同一条边不重复建：同步反复跑不应把边表撑爆。
+    CONSTRAINT uq_asset_edges UNIQUE (src_id, dst_id, kind),
+    CONSTRAINT asset_edges_no_self CHECK (src_id <> dst_id)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_edges_src ON asset_edges(src_id, kind);
+CREATE INDEX IF NOT EXISTS idx_asset_edges_dst ON asset_edges(dst_id, kind);
+
+-- 公网 / 内网 / DMZ / 回环。用于「公网IP」菜单过滤，以及逐层追查时区分
+-- 公网暴露面与内网纵深。默认 public：改造前所有 ip 记录都是扫描目标，
+-- 即默认当作公网可见（保守方向：宁可多展示也不把可疑项藏起来）。
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS ip_scope TEXT;
+UPDATE assets SET ip_scope = 'public' WHERE ip_scope IS NULL AND type IN ('ip','service');
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_ip_scope_check;
+ALTER TABLE assets ADD CONSTRAINT assets_ip_scope_check
+    CHECK (ip_scope IS NULL OR ip_scope IN ('public','private','dmz','loopback'));
+CREATE INDEX IF NOT EXISTS idx_av2_ip_scope ON assets(ip_scope) WHERE ip_scope IS NOT NULL;
+
+-- 接口所属的服务。endpoint 与 service(http) 共享同一个 URL，但之前是两条
+-- 互不相干的记录：看不出“这个接口属于那个站点”。有 parent_service_id 后
+-- 才能从 WEB 资产逐层下钻到 URL 路径。
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS parent_service_id BIGINT
+    REFERENCES assets(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_av2_parent_service
+    ON assets(parent_service_id) WHERE parent_service_id IS NOT NULL;
+
+-- host 类型的主机维度字段（内网/DMZ 主机）。
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS hostname  TEXT;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS os        TEXT;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS host_role TEXT;  -- web / db / dc / jump …
+
+-- NAT 映射的端点。一条 nat 资产表示 “内网 A 的 x 端口映射到 外网 B 的 y 端口”。
+-- 之所以用字段而不是拆表：它的生命周期与其它资产一样（都要能被任务关联、
+-- 打标签、逐层追查），拆出去反而要多一套 CRUD。
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS nat_internal_ip    TEXT;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS nat_internal_port  INTEGER;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS nat_external_ip    TEXT;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS nat_external_port  INTEGER;
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS nat_protocol       TEXT;
+
+-- 幂等键（upsert 用）。部分唯一索引：只约束对应类型，不影响其它资产。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_av2_host_hostname
+    ON assets(hostname) WHERE type = 'host' AND hostname IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_av2_host_ip
+    ON assets(ip) WHERE type = 'host' AND ip IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_av2_nat_key
+    ON assets(nat_internal_ip, nat_internal_port, nat_protocol)
+    WHERE type = 'nat' AND nat_internal_ip IS NOT NULL;
+
+-- 旧库的 type CHECK 约束是建表时写死的，CREATE TABLE IF NOT EXISTS 不会更新它，
+-- 所以必须显式重建，否则 host/nat 插入会被拒。
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_type_check;
+ALTER TABLE assets ADD CONSTRAINT assets_type_check CHECK (type IN (
+    'root_domain','ip','subdomain','app','service','endpoint','host','nat'
+));
+
+-- ---------------------------------------------------------------------
+-- 回填：把原来靠字符串巧合表达的父子关系变成真实的边
+-- ---------------------------------------------------------------------
+-- 幂等（ON CONFLICT DO NOTHING），每次启动重跑也不会重复建边。
+
+-- 子域 → 根域
+INSERT INTO asset_edges (src_id, dst_id, kind)
+SELECT c.id, p.id, 'belongs_to'
+FROM assets c
+JOIN assets p ON p.type = 'root_domain' AND p.domain = c.root_domain
+WHERE c.type = 'subdomain' AND c.root_domain IS NOT NULL AND c.root_domain <> ''
+ON CONFLICT DO NOTHING;
+
+-- 服务 → 根域（service 的 domain 是自己直接挂的域名；若它等于根域则跳过）
+INSERT INTO asset_edges (src_id, dst_id, kind)
+SELECT s.id, p.id, 'belongs_to'
+FROM assets s
+JOIN assets p ON p.type = 'root_domain' AND p.domain = s.root_domain
+WHERE s.type = 'service' AND s.root_domain IS NOT NULL AND s.root_domain <> ''
+ON CONFLICT DO NOTHING;
+
+-- 子域 → 根域缺失时，用 subdomain 自身的父域补一条（root_domain 行不存在就不建边，
+-- 避免指向不存在的 id）。
+INSERT INTO asset_edges (src_id, dst_id, kind)
+SELECT s.id, p.id, 'belongs_to'
+FROM assets s
+JOIN assets p ON p.type = 'subdomain' AND p.domain = s.root_domain
+WHERE s.type = 'service' AND s.root_domain IS NOT NULL AND s.root_domain <> ''
+  AND NOT EXISTS (SELECT 1 FROM assets r WHERE r.type='root_domain' AND r.domain = s.root_domain)
+ON CONFLICT DO NOTHING;
+
+-- 服务 → IP
+INSERT INTO asset_edges (src_id, dst_id, kind)
+SELECT s.id, i.id, 'runs_on'
+FROM assets s
+JOIN assets i ON i.type = 'ip' AND i.ip = s.ip
+WHERE s.type IN ('service','endpoint') AND s.ip IS NOT NULL AND s.ip <> ''
+ON CONFLICT DO NOTHING;
+
+-- 子域 → IP（DNS 解析值）
+INSERT INTO asset_edges (src_id, dst_id, kind)
+SELECT s.id, i.id, 'resolves_to'
+FROM assets s
+JOIN assets i ON i.type = 'ip' AND i.ip = ANY(s.record_value)
+WHERE s.type = 'subdomain' AND s.record_value IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+-- 接口 → 所属服务（同一 URL）。只在唯一命中时建边，避免一对多歧义。
+INSERT INTO asset_edges (src_id, dst_id, kind)
+SELECT e.id, s.id, 'belongs_to'
+FROM assets e
+JOIN assets s ON s.type = 'service' AND s.service_type = 'http' AND s.url = e.url
+WHERE e.type = 'endpoint'
+  AND e.parent_service_id IS NULL
+  AND (SELECT count(*) FROM assets s2 WHERE s2.type='service' AND s2.service_type='http' AND s2.url = e.url) = 1
+ON CONFLICT DO NOTHING;
+
+-- 回填 parent_service_id，让外键与边表保持一致（外键用于级联删除）。
+UPDATE assets e
+SET parent_service_id = s.id
+FROM assets s
+WHERE e.type = 'endpoint'
+  AND e.parent_service_id IS NULL
+  AND s.type = 'service' AND s.service_type = 'http' AND s.url = e.url
+  AND (SELECT count(*) FROM assets s2 WHERE s2.type='service' AND s2.service_type='http' AND s2.url = e.url) = 1;
 
 CREATE TABLE IF NOT EXISTS company_scope (
     id         BIGSERIAL PRIMARY KEY,

@@ -67,27 +67,10 @@ export const ASSET_VIEWS: Record<AssetViewKey, AssetView> = {
     dsl: "service_type==http",
   },
   app: { key: "app", title: "应用清单", dbType: "app" },
-  nat: {
-    key: "nat",
-    title: "NAT映射",
-    dbType: null,
-    placeholderReason:
-      "assets 表的 type 约束目前只包含 root_domain / ip / subdomain / app / service / endpoint，没有 NAT 映射记录。需要先扩展数据模型（内网地址、外网地址、协议、端口映射关系）才能展示。",
-  },
-  dmzip: {
-    key: "dmzip",
-    title: "DMZIP",
-    dbType: null,
-    placeholderReason:
-      "assets 表没有 DMZ 网段标记字段，无法区分 DMZ 区与普通内网 IP。需要先给资产增加区域/网段属性，或引入独立的 DMZ 资产表。",
-  },
-  host: {
-    key: "host",
-    title: "主机资产",
-    dbType: null,
-    placeholderReason:
-      "assets 表没有主机（操作系统级）资产类型。现有 ip 类型记录的是网络地址与开放端口，不包含主机名、操作系统、补丁等主机维度信息。",
-  },
+  nat: { key: "nat", title: "NAT映射", dbType: "nat" },
+  // DMZ 是组织概念，地址上看不出来，因此靠人工标注的 ip_scope 过滤。
+  dmzip: { key: "dmzip", title: "DMZIP", dbType: "ip", dsl: "ip_scope==dmz" },
+  host: { key: "host", title: "主机资产", dbType: "host" },
 };
 
 const ICONS: Record<AssetViewKey, LucideIcon> = {

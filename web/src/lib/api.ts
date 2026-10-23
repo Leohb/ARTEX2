@@ -14,6 +14,8 @@ import type {
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
+  AssetRelations,
+  AssetTreeNode,
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
@@ -535,6 +537,16 @@ export const api = {
   // 部分更新：只传要改的字段。
   patchAsset: (id: number, patch: Partial<Asset>) =>
     http<Asset>(`/assets/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // 资产图：逐层追查树 + 单条资产的上游/下游关系。
+  assetTree: (roots: number[] = [], depth = 6) => {
+    const qs = new URLSearchParams();
+    for (const r of roots) qs.append("root", String(r));
+    if (depth) qs.set("depth", String(depth));
+    return get<{ roots: AssetTreeNode[] }>(`/assets/tree?${qs.toString()}`).then((r) => r?.roots ?? []);
+  },
+  assetRelations: (id: number) => get<AssetRelations>(`/assets/${id}/relations`),
+  setAssetScope: (id: number, scope: string) =>
+    http<{ ok: boolean }>(`/assets/${id}/scope`, { method: "PATCH", body: JSON.stringify({ ip_scope: scope }) }),
   // ---- 自定义标签 ----
   tags: () => get<Tag[]>("/tags").then(arr),
   createTag: (body: { name: string; color?: string; description?: string }) => post<Tag>("/tags", body),
