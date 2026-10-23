@@ -103,6 +103,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
+	mux.HandleFunc("GET /api/assets/{id}", s.getAsset)
+	mux.HandleFunc("PATCH /api/assets/{id}", s.patchAsset)
+
+	// 自定义标签：标签定义本身（名字/颜色/说明）的管理入口。
+	mux.HandleFunc("GET /api/tags", s.listTags)
+	mux.HandleFunc("POST /api/tags", s.createTag)
+	mux.HandleFunc("PATCH /api/tags/{id}", s.updateTag)
+	mux.HandleFunc("DELETE /api/tags/{id}", s.deleteTag)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)

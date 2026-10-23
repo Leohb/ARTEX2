@@ -277,11 +277,25 @@ export interface Asset {
   auth?: Record<string, unknown>[];
   method?: string;
   params?: Record<string, unknown>[];
+  /** 自定义标签名数组（标签定义见 Tag） */
+  tags?: string[];
   extra?: Record<string, unknown>;
   last_seen: string;
   task_source?: string;
   task_source_summary?: string;
   task_source_node_id?: number;
+}
+
+/** 自定义标签定义（/api/tags）。资产上存的是标签名，不是 id。 */
+export interface Tag {
+  id: number;
+  name: string;
+  color?: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+  /** 当前被多少条资产引用 */
+  asset_count: number;
 }
 
 export interface IntentAsset {

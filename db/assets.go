@@ -52,6 +52,8 @@ type Asset struct {
 	// endpoint fields
 	Method string           `json:"method,omitempty"`
 	Params []map[string]any `json:"params,omitempty"`
+	// 自定义标签（标签名数组，见 db/tags.go 的设计说明）
+	Tags []string `json:"tags"`
 	// meta
 	Extra             map[string]any `json:"extra,omitempty"`
 	LastSeen          string         `json:"last_seen"`
@@ -98,6 +100,9 @@ func (d *DB) Assets() *AssetStore {
 
 // Companies returns the company store associated with this asset store.
 func (s *AssetStore) Companies() *CompanyStore { return s.company }
+
+// Tags returns the tag store.
+func (d *DB) Tags() *TagStore { return &TagStore{db: d} }
 
 // withCompanyScopeMutation serializes scope resolution and every asset write
 // that consumes its result in one transaction. Nested asset side effects reuse
@@ -1107,7 +1112,8 @@ SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
+       array_to_json(tags)::text
 FROM assets
 WHERE type = $1
 ORDER BY last_seen DESC, id DESC
@@ -1138,7 +1144,8 @@ func (s *AssetStore) QueryByCompany(companyID int64, typ string, limit, offset i
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
+       array_to_json(tags)::text
 FROM assets WHERE company_id = $1`
 	args := []any{companyID}
 	if typ != "" {
@@ -1190,7 +1197,8 @@ func (s *AssetStore) QueryByTask(taskID int64, typ string, limit, offset int) ([
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
+       array_to_json(tags)::text
 FROM assets WHERE $1 = ANY(task_ids)`
 	args := []any{taskID}
 	if typ != "" {
@@ -1388,7 +1396,8 @@ const assetSelectCols = `SELECT id, type, company_id, array_to_json(task_ids)::t
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
-       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
+       COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text,
+       array_to_json(tags)::text
 FROM assets`
 
 // GetByIDs returns assets with the given ids (order preserved by id array order).
@@ -1498,7 +1507,7 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 	var out []*Asset
 	for rows.Next() {
 		a := &Asset{}
-		var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, authRaw, paramsRaw, extraRaw []byte
+		var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, authRaw, paramsRaw, extraRaw, tagsRaw []byte
 		var port, statusCode sql.NullInt64
 		var contentLength sql.NullInt64
 		var companyID sql.NullInt64
@@ -1511,7 +1520,7 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 			&a.URL, &a.ServiceType, &a.ServiceName,
 			&a.FaviconMMH3, &statusCode, &contentLength,
 			&a.PageTitle, &techsRaw, &authRaw,
-			&a.Method, &paramsRaw, &extraRaw, &a.LastSeen,
+			&a.Method, &paramsRaw, &extraRaw, &a.LastSeen, &tagsRaw,
 		); err != nil {
 			return nil, err
 		}
@@ -1556,7 +1565,163 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 		if len(extraRaw) > 0 {
 			_ = json.Unmarshal(extraRaw, &a.Extra)
 		}
+		if len(tagsRaw) > 0 {
+			_ = json.Unmarshal(tagsRaw, &a.Tags)
+		}
+		if a.Tags == nil {
+			a.Tags = []string{}
+		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// =====================================================================
+// 单条资产的编辑（人工在资产页操作）
+// =====================================================================
+//
+// 与 Agent 用的 InsertAssets 区分开：那条路径是「批量登记新发现」，字段按
+// 类型强校验；这条是「人在页面上改一条已存在的记录」，允许部分更新，且不
+// 参与企业自动归因（避免人工改了域名就被 scope 抢走归属）。
+
+// ErrAssetNotFound 表示目标资产不存在（或已被删除）。
+var ErrAssetNotFound = errors.New("asset not found")
+
+// AssetPatch 是 PUT /api/assets/{id} 的可选字段集合。指针为 nil 表示「不改」，
+// 这是区分「清空」与「不动」的唯一可靠方式——用零值无法表达「把标题改成空」。
+type AssetPatch struct {
+	Domain       *string   `json:"domain"`
+	ICP          *string   `json:"icp"`
+	RecordType   *string   `json:"record_type"`
+	RecordValue  *[]string `json:"record_value"`
+	IP           *string   `json:"ip"`
+	BoundDomains *[]string `json:"bound_domains"`
+	AppName      *string   `json:"app_name"`
+	BundleID     *string   `json:"bundle_id"`
+	Category     *string   `json:"category"`
+	AppICP       *string   `json:"app_icp"`
+	URL          *string   `json:"url"`
+	ServiceName  *string   `json:"service_name"`
+	PageTitle    *string   `json:"page_title"`
+	StatusCode   *int      `json:"status_code"`
+	Technologies *[]string `json:"technologies"`
+	Method       *string   `json:"method"`
+	CompanyID    *int64    `json:"company_id"`
+	Tags         *[]string `json:"tags"`
+}
+
+// PatchAsset 对单条资产做部分更新。只更新非 nil 字段，返回更新后的完整记录。
+func (s *AssetStore) PatchAsset(id int64, p AssetPatch) (*Asset, error) {
+	sets := []string{}
+	args := []any{}
+	n := 0
+	add := func(col string, val any) {
+		n++
+		sets = append(sets, fmt.Sprintf("%s = $%d", col, n))
+		args = append(args, val)
+	}
+
+	if p.Domain != nil {
+		add("domain", *p.Domain)
+	}
+	if p.ICP != nil {
+		add("icp", *p.ICP)
+	}
+	if p.RecordType != nil {
+		add("record_type", *p.RecordType)
+	}
+	if p.RecordValue != nil {
+		add("record_value", *p.RecordValue)
+	}
+	if p.IP != nil {
+		add("ip", *p.IP)
+	}
+	if p.BoundDomains != nil {
+		add("bound_domains", *p.BoundDomains)
+	}
+	if p.AppName != nil {
+		add("app_name", *p.AppName)
+	}
+	if p.BundleID != nil {
+		add("bundle_id", *p.BundleID)
+	}
+	if p.Category != nil {
+		add("category", *p.Category)
+	}
+	if p.AppICP != nil {
+		add("app_icp", *p.AppICP)
+	}
+	if p.URL != nil {
+		add("url", *p.URL)
+	}
+	if p.ServiceName != nil {
+		add("service_name", *p.ServiceName)
+	}
+	if p.PageTitle != nil {
+		add("page_title", *p.PageTitle)
+	}
+	if p.StatusCode != nil {
+		add("status_code", *p.StatusCode)
+	}
+	if p.Technologies != nil {
+		add("technologies", *p.Technologies)
+	}
+	if p.Method != nil {
+		add("method", *p.Method)
+	}
+	if p.CompanyID != nil {
+		add("company_id", *p.CompanyID)
+		// 人工指定归属后，标记来源为 explicit，避免下次 scope 重建把它清掉。
+		sets = append(sets, "company_source = 'explicit'")
+	}
+	if p.Tags != nil {
+		add("tags", normalizeTagSlice(*p.Tags))
+	}
+
+	if len(sets) == 0 {
+		return s.GetByID(id)
+	}
+	n++
+	args = append(args, id)
+	q := "UPDATE assets SET " + strings.Join(sets, ", ") + fmt.Sprintf(" WHERE id = $%d", n)
+	res, err := s.db.Exec(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("patch asset: %w", err)
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return nil, ErrAssetNotFound
+	}
+	return s.GetByID(id)
+}
+
+// GetByID 取单条资产（找不到返回 ErrAssetNotFound）。
+func (s *AssetStore) GetByID(id int64) (*Asset, error) {
+	rows, err := s.db.Query(assetSelectCols+" WHERE id = $1", id)
+	if err != nil {
+		return nil, fmt.Errorf("get asset: %w", err)
+	}
+	defer rows.Close()
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return nil, fmt.Errorf("get asset: %w", err)
+	}
+	if len(assets) == 0 {
+		return nil, ErrAssetNotFound
+	}
+	return assets[0], nil
+}
+
+// normalizeTagSlice 去空白、去空项、去重，并保持用户输入顺序。
+func normalizeTagSlice(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, raw := range in {
+		t := strings.TrimSpace(raw)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
 }

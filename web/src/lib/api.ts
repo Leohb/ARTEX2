@@ -87,6 +87,7 @@ import type {
   SSSyncRun,
   SSTask,
   Stats,
+  Tag,
   Task,
   TaskArchive,
   TaskArchivePage,
@@ -524,6 +525,22 @@ export const api = {
     get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
   deleteAssets: (ids: number[]) =>
     http<{ deleted: number }>("/assets", { method: "DELETE", body: JSON.stringify({ ids }) }),
+  getAsset: (id: number) => get<Asset>(`/assets/${id}`),
+  // 人工新增：走同一个 POST /api/assets，但只插一条且不带 task_id。
+  insertAssets: (assets: Record<string, unknown>[]) =>
+    post<{ results: { index: number; id: number; type: string }[]; errors: { index: number; error: string }[] }>(
+      "/assets",
+      { assets },
+    ),
+  // 部分更新：只传要改的字段。
+  patchAsset: (id: number, patch: Partial<Asset>) =>
+    http<Asset>(`/assets/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // ---- 自定义标签 ----
+  tags: () => get<Tag[]>("/tags").then(arr),
+  createTag: (body: { name: string; color?: string; description?: string }) => post<Tag>("/tags", body),
+  updateTag: (id: number, body: { name?: string; color?: string; description?: string }) =>
+    http<Tag>(`/tags/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteTag: (id: number) => http<{ deleted: number }>(`/tags/${id}`, { method: "DELETE" }),
   // task-scoped view of the same endpoint — server-side paginated like `assets`
   taskAssets: (taskId: string, type = "", limit = 50, offset = 0) =>
     get<{ count: number; total: number; assets: Asset[] }>(

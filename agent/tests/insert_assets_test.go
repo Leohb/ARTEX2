@@ -321,7 +321,7 @@ func TestInsertAssetsMixedBatch(t *testing.T) {
 
 	out := callInsertAssets(t, ts, map[string]any{
 		"assets": []any{
-			// root_domain
+			// root_domain 由人工维护，Agent 只读：应被拒绝而不是入库
 			map[string]any{"type": "root_domain", "domain": "batch-test.org"},
 			// subdomain with A record
 			map[string]any{"type": "subdomain", "domain": "batch-sub.batch-test.org", "record_type": "A", "record_value": []string{"55.66.77.88"}},
@@ -333,21 +333,40 @@ func TestInsertAssetsMixedBatch(t *testing.T) {
 		"task_id": 777,
 	})
 
-	if errs, _ := out["errors"].([]any); len(errs) > 0 {
-		t.Errorf("unexpected errors: %v", errs)
+	// root_domain 必须被拒，其余三种正常入库。
+	errs, _ := out["errors"].([]any)
+	if len(errs) != 1 {
+		t.Errorf("want exactly 1 error (root_domain rejected), got %v", errs)
 	}
 	results, _ := out["results"].([]any)
-	if len(results) != 4 {
-		t.Errorf("mixed batch: want 4 results, got %d", len(results))
+	if len(results) != 3 {
+		t.Errorf("mixed batch: want 3 results, got %d", len(results))
 	}
 
-	// verify all types exist in DB
-	types := []string{"root_domain", "subdomain", "service", "endpoint"}
+	// root_domain 的「直接写入」必须被拒。注意：登记 subdomain 会连带创建父域
+	// 的 root_domain 记录（既有副作用，见 TestInsertAssetsSideEffects），那不是
+	// Agent 显式写根域名，所以这里只验证「显式 root_domain 条目没有生效」——
+	// 即它既不在 results 里，错误信息也点明了原因。
+	{
+		var explicitRejected bool
+		for _, e := range errs {
+			m, _ := e.(map[string]any)
+			if msg, _ := m["error"].(string); strings.Contains(msg, "root_domain 由人工维护") {
+				explicitRejected = true
+			}
+		}
+		if !explicitRejected {
+			t.Errorf("explicit root_domain insert was not rejected: %v", errs)
+		}
+	}
+
+	// verify the writable types exist in DB
+	types := []string{"subdomain", "service", "endpoint"}
 	for _, typ := range types {
 		var cnt int
 		switch typ {
 		case "root_domain":
-			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=$1 AND domain='batch-test.org'`, typ).Scan(&cnt)
+			continue
 		case "subdomain":
 			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=$1 AND domain='batch-sub.batch-test.org'`, typ).Scan(&cnt)
 		case "service":
@@ -371,11 +390,12 @@ func TestInsertAssetsDedup(t *testing.T) {
 
 	ts := NewToolSet(nil, "")
 	ts.SetAssetStore(d.Assets(), d.Companies())
-	defer d.Exec(`DELETE FROM assets WHERE domain='dedup-ia.deduptest.net' OR domain='deduptest.net'`)
+	defer d.Exec(`DELETE FROM assets WHERE domain='dedup-ia.deduptest.net'`)
 
+	// 用 subdomain 而不是 root_domain：后者已改为 Agent 只读，无法用来验证幂等。
 	payload := map[string]any{
 		"assets": []any{
-			map[string]any{"type": "root_domain", "domain": "deduptest.net"},
+			map[string]any{"type": "subdomain", "domain": "dedup-ia.deduptest.net"},
 		},
 	}
 
@@ -409,11 +429,11 @@ func TestInsertAssetsRejectsHostnameIPPerItem(t *testing.T) {
 
 	ts := NewToolSet(nil, "")
 	ts.SetAssetStore(d.Assets(), d.Companies())
-	defer d.Exec(`DELETE FROM assets WHERE ip IN ('198.51.100.23','cdn.badip-test.com') OR domain='badip-test.com'`)
+	defer d.Exec(`DELETE FROM assets WHERE ip IN ('198.51.100.23','cdn.badip-test.com') OR domain IN ('badip-test.com','badip-test.org')`)
 
 	out := callInsertAssets(t, ts, map[string]any{
 		"assets": []any{
-			map[string]any{"type": "root_domain", "domain": "badip-test.com"},
+			map[string]any{"type": "subdomain", "domain": "badip-test.org"},
 			map[string]any{"type": "ip", "ip": "cdn.badip-test.com"},
 			map[string]any{"type": "ip", "ip": "198.51.100.23"},
 		},

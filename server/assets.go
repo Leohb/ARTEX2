@@ -486,6 +486,8 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 			// endpoint
 			Method string           `json:"method"`
 			Params []map[string]any `json:"params"`
+			// 自定义标签（人工在资产页新增时可带；Agent 路径不传）
+			Tags []string `json:"tags"`
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -543,6 +545,16 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.TaskID > 0 {
 			_ = as.SetTaskAssetSource(req.TaskID, id, "api", "通过资产 API 登记", nil)
+		}
+		// 标签在 upsert 之后单独写：Upsert* 系列按类型各管各的列，把 tags 塞进
+		// 每条 SQL 会让那批函数都多一个与自身职责无关的参数。
+		if len(a.Tags) > 0 {
+			tags := a.Tags
+			if _, perr := as.PatchAsset(id, db.AssetPatch{Tags: &tags}); perr == nil {
+				if ts := s.tagStore(w); ts != nil {
+					_ = ts.EnsureTagsExist(tags)
+				}
+			}
 		}
 		results = append(results, result{Index: i, ID: id, Type: a.Type})
 	}

@@ -134,8 +134,8 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				"items": obj(map[string]any{
 					"type": map[string]any{
 						"type":        "string",
-						"enum":        []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"},
-						"description": "资产类型",
+						"enum":        []string{"ip", "subdomain", "app", "service", "endpoint"},
+						"description": "资产类型（root_domain 由人工维护，Agent 不可写，故不在枚举内）",
 					},
 					// root_domain / subdomain
 					"domain":      str("根域名或子域名（root_domain/subdomain 必填）"),
@@ -252,6 +252,20 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				typ := strings.TrimSpace(item.Type)
 				var id int64
 				var err error
+
+				// 主域名是人工维护的资产，Agent 只读。
+				//
+				// 拦在工具层而不是只写在提示词里：模型未必遵守提示词，而一旦它
+				// 顺手把一个根域名登记进来，人工维护的清单就被污染了，且没有
+				// 明显的痕迹能看出这条是模型写的。子域名仍允许 Agent 写——扫描
+				// 出来的子域本来就该自动入库，根域名才是人定的边界。
+				if typ == "root_domain" {
+					errs = append(errs, errEntry{
+						Index: i,
+						Error: "root_domain 由人工维护，Agent 只读：请改用 type=subdomain 登记扫描到的子域名，根域名由用户在资产页添加",
+					})
+					continue
+				}
 
 				switch typ {
 				case "root_domain":
@@ -373,15 +387,22 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 	)
 }
 
+// allowAgentCompanyWrite 控制 Agent 能否写企业/资产范围。
+//
+// 当前策略：企业由人工维护，Agent 只读。改成 true 即可恢复原有的自动归因能力，
+// 但要注意那会让模型能够新建企业并改写归属，与「人工主数据」的定位冲突。
+const allowAgentCompanyWrite = false
+
 // addCompanyScope writes to company_scope table and triggers asset attribution.
+//
+// 企业是人工维护的资产，Agent 只读。这个工具保留注册（历史任务绑定、工具列表
+// 迁移都还引用它），但 handler 直接拒绝写入，并把原因明确回给模型——比让模型
+// 看到一个不存在的工具、再自己去猜原因要好。读取企业信息请用 list_companies。
 func (t *ToolSet) addCompanyScope() actool.CoreTool {
 	return writeTool(
 		"add_company_scope",
-		"把域名/IP/CIDR/ICP备案/企业关键词加入某公司的【资产范围】——域名、网络和ICP会自动认领命中的资产，关键词只提供给Agent作为范围提示。\n"+
-			"公司名唯一：company 不存在则新建，已存在则复用(只把范围并进去)。\n"+
-			"scope 一行一条，系统自动识别：根域名 / URL / 单个 IP / CIDR 网段 / ICP备案 / 企业关键词。\n"+
-			"务必给 reason 说明归属依据(whois/证书/ASN 等)。\n"+
-			"护栏：拒绝裸 TLD 与过宽网段(IPv4前缀需为/16-/32、IPv6前缀需为/32-/128)，非法行会被跳过并在 errors 返回。",
+		"【已停用，调用会直接报错】企业与资产范围由人工在「资产 → 企业」页维护，Agent 只读。\n"+
+			"读取企业信息请用 list_companies；若发现资产归属有误，请在结论里说明，由用户决定是否调整。",
 		obj(map[string]any{
 			"company": str("公司名(不存在则新建、存在则复用；名称唯一)"),
 			"scope":   str("资产范围，一行一条：域名 / URL / IP / CIDR / ICP备案 / 企业关键词"),
@@ -389,6 +410,15 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 			"logo":    str("公司图标 URL(可选；仅新建公司时生效)"),
 		}, "company", "scope"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			// 企业只读：拒绝一切写入，无论入参是否合法。
+			//
+			// 用常量开关而不是直接删代码/留死代码：删掉会让日后想恢复的人无从下手，
+			// 留死代码则过不了 go vet（unreachable）。常量在编译期折叠，所以既没有
+			// 运行时代价，也保留了原实现可查。
+			if !allowAgentCompanyWrite {
+				return actool.Errorf("add_company_scope 已停用：企业与资产范围由人工在「资产 → 企业」页维护，Agent 只读。" +
+					"请用 list_companies 读取已有企业；如发现归属错误，在结论里说明，由用户决定是否调整"), nil
+			}
 			if t.cs == nil {
 				return actool.Errorf("add_company_scope 未启用: CompanyStore 未初始化"), nil
 			}

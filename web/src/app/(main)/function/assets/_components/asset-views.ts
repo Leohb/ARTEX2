@@ -4,12 +4,11 @@ import {
   Building2,
   Globe,
   Layers,
-  Link2,
+  type LucideIcon,
   Monitor,
   Network,
   Router,
   Server,
-  type LucideIcon,
   Waypoints,
 } from "lucide-react";
 
@@ -29,7 +28,6 @@ export type AssetViewKey =
   | "ip"
   | "service"
   | "web"
-  | "endpoint"
   | "app"
   | "nat"
   | "dmzip"
@@ -68,7 +66,6 @@ export const ASSET_VIEWS: Record<AssetViewKey, AssetView> = {
     // 必须写成 `a==b`。值不用加引号。
     dsl: "service_type==http",
   },
-  endpoint: { key: "endpoint", title: "API接口", dbType: "endpoint" },
   app: { key: "app", title: "应用清单", dbType: "app" },
   nat: {
     key: "nat",
@@ -100,7 +97,6 @@ const ICONS: Record<AssetViewKey, LucideIcon> = {
   ip: Network,
   service: Server,
   web: Monitor,
-  endpoint: Link2,
   app: AppWindow,
   nat: Router,
   dmzip: Layers,

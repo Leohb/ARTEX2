@@ -2,14 +2,7 @@
 
 import * as React from "react";
 
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  KeyRoundIcon,
-  type LucideIcon,
-  RefreshCwIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { KeyRoundIcon, PencilIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { AssetDslSearch } from "@/components/asset-dsl-search";
@@ -40,7 +33,6 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Sheet,
   SheetContent,
@@ -56,7 +48,7 @@ import { parseCompanyScopeText } from "@/lib/company-scope";
 import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { AssetCard, Chips, MethodBadge, PlaceholderCard, statusTone } from "./asset-table";
+import { AssetCard, Chips, PlaceholderCard, statusTone } from "./asset-table";
 import { type AssetView, assetViewIcon } from "./asset-views";
 
 export default function AssetsPage({ view }: { view: AssetView }) {
@@ -153,7 +145,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
       setSelected(new Set());
       refresh();
     } catch (e) {
-      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+      toast.error(`删除失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setDeleting(false);
       setDeleteOpen(false);
@@ -172,7 +164,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
       toast.success(msg);
       refresh();
     } catch (e) {
-      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+      toast.error(`删除失败：${String((e as Error)?.message ?? e)}`);
     } finally {
       setCompanyDeleting(false);
       setCompanyDeleteTarget(null);
@@ -279,14 +271,14 @@ export default function AssetsPage({ view }: { view: AssetView }) {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <ViewIcon className="size-5 text-muted-foreground" />
-          <h1 className="text-xl font-semibold tracking-tight">{view.title}</h1>
+          <h1 className="font-semibold text-xl tracking-tight">{view.title}</h1>
           <Badge variant="secondary" className="tabular-nums">
             {headerCount}
           </Badge>
         </div>
         <div className="flex items-center gap-3">
           {!isPlaceholder && (
-            <span className="text-sm text-muted-foreground">
+            <span className="text-muted-foreground text-sm">
               共 <span className="tabular-nums">{totalAssets}</span> 项资产
             </span>
           )}
@@ -300,6 +292,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
               <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} /> 刷新
             </Button>
           )}
+          {!isPlaceholder && !isCompany && <CreateAssetButton view={view} onSaved={refresh} />}
           {isCompany && <CompanyDialog onSaved={refresh} />}
         </div>
       </div>
@@ -331,7 +324,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                               <span className="font-medium">{c.name}</span>
                             </div>
                           </TableCell>
-                          <TableCell className="text-right tabular-nums text-sm">{c.asset_count}</TableCell>
+                          <TableCell className="text-right text-sm tabular-nums">{c.asset_count}</TableCell>
                           <TableCell>
                             {c.scope?.length ? (
                               <div className="flex flex-wrap gap-1">
@@ -342,7 +335,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                                 ))}
                               </div>
                             ) : (
-                              <span className="text-xs text-muted-foreground">未设置范围</span>
+                              <span className="text-muted-foreground text-xs">未设置范围</span>
                             )}
                           </TableCell>
                           <TableCell className="text-right">
@@ -367,7 +360,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                       ))}
                       {companies.length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                          <TableCell colSpan={4} className="py-10 text-center text-muted-foreground text-sm">
                             还没有企业。点击右上角「新增企业」并填写资产范围，系统会自动认领命中的资产。
                           </TableCell>
                         </TableRow>
@@ -384,7 +377,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "域名", "ICP 备案", "归属企业", ""]}
+                cols={["", "域名", "ICP 备案", "归属企业", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -400,12 +393,16 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                     <TableCell className="w-8 pr-0">
                       <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                     </TableCell>
-                    <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
+                    <TableCell className="font-medium font-mono text-xs">{a.domain}</TableCell>
                     <TableCell className="text-xs">{a.icp || "—"}</TableCell>
                     <TableCell className="text-xs">
                       {companyName(a.company_id) || <span className="text-muted-foreground">未归属</span>}
                     </TableCell>
+                    <TableCell>
+                      <TagsCell tags={a.tags} />
+                    </TableCell>
                     <TableCell className="w-8 pl-0">
+                      <EditAssetButton a={a} onSaved={refresh} />
                       <Button
                         variant="ghost"
                         size="icon"
@@ -427,7 +424,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "IP", "C段", "绑定域名", "开放端口", ""]}
+                cols={["", "IP", "C段", "绑定域名", "开放端口", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -443,7 +440,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                     <TableCell className="w-8 pr-0">
                       <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                     </TableCell>
-                    <TableCell className="font-mono text-xs font-medium">{a.ip}</TableCell>
+                    <TableCell className="font-medium font-mono text-xs">{a.ip}</TableCell>
                     <TableCell className="font-mono text-xs">{a.c_segment || "—"}</TableCell>
                     <TableCell>
                       <Chips items={a.bound_domains ?? []} mono />
@@ -454,7 +451,11 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                         mono
                       />
                     </TableCell>
+                    <TableCell>
+                      <TagsCell tags={a.tags} />
+                    </TableCell>
                     <TableCell className="w-8 pl-0">
+                      <EditAssetButton a={a} onSaved={refresh} />
                       <Button
                         variant="ghost"
                         size="icon"
@@ -476,7 +477,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "域名", "根域名", "解析类型", "解析值", ""]}
+                cols={["", "域名", "根域名", "解析类型", "解析值", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -492,13 +493,17 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                     <TableCell className="w-8 pr-0">
                       <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                     </TableCell>
-                    <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
+                    <TableCell className="font-medium font-mono text-xs">{a.domain}</TableCell>
                     <TableCell className="font-mono text-xs">{a.root_domain || "—"}</TableCell>
                     <TableCell className="text-xs">{a.record_type || "—"}</TableCell>
                     <TableCell className="max-w-xs truncate font-mono text-xs">
                       {(Array.isArray(a.record_value) ? a.record_value.join(", ") : a.record_value) || "—"}
                     </TableCell>
+                    <TableCell>
+                      <TagsCell tags={a.tags} />
+                    </TableCell>
                     <TableCell className="w-8 pl-0">
+                      <EditAssetButton a={a} onSaved={refresh} />
                       <Button
                         variant="ghost"
                         size="icon"
@@ -520,7 +525,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "应用名", "Bundle ID", "分类", "ICP 备案", ""]}
+                cols={["", "应用名", "Bundle ID", "分类", "ICP 备案", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -536,11 +541,15 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                     <TableCell className="w-8 pr-0">
                       <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
                     </TableCell>
-                    <TableCell className="text-xs font-medium">{a.app_name || "—"}</TableCell>
+                    <TableCell className="font-medium text-xs">{a.app_name || "—"}</TableCell>
                     <TableCell className="font-mono text-xs">{a.bundle_id || "—"}</TableCell>
                     <TableCell className="text-xs">{a.category || "—"}</TableCell>
                     <TableCell className="text-xs">{a.app_icp || "—"}</TableCell>
+                    <TableCell>
+                      <TagsCell tags={a.tags} />
+                    </TableCell>
                     <TableCell className="w-8 pl-0">
+                      <EditAssetButton a={a} onSaved={refresh} />
                       <Button
                         variant="ghost"
                         size="icon"
@@ -562,7 +571,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", ""]}
+                cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -574,18 +583,25 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                 onToggleAll={(ids) => toggleSelectAll(ids)}
               >
                 {slice(tabData("service")).map((a) => (
-                  <ServiceRow key={a.id} a={a} selected={selected} onToggle={toggleSelect} onDelete={openDelete} />
+                  <ServiceRow
+                    key={a.id}
+                    a={a}
+                    selected={selected}
+                    onToggle={toggleSelect}
+                    onDelete={openDelete}
+                    onSaved={refresh}
+                  />
                 ))}
               </AssetCard>
             </div>
           )}
 
-          {/* API接口 */}
-          {view.key === "endpoint" && (
+          {/* 公网服务 */}
+          {view.key === "service" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "方法", "完整地址", "参数", ""]}
+                cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -596,38 +612,15 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                 selected={selected}
                 onToggleAll={(ids) => toggleSelectAll(ids)}
               >
-                {slice(tabData("endpoint")).map((a) => (
-                  <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
-                    <TableCell className="w-8 pr-0">
-                      <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
-                    </TableCell>
-                    <TableCell className="w-16">
-                      <MethodBadge method={a.method || ""} />
-                    </TableCell>
-                    <TableCell className="max-w-sm truncate font-mono text-xs" title={a.url}>
-                      {a.url || "—"}
-                    </TableCell>
-                    <TableCell>
-                      <Chips
-                        items={(a.params ?? []).map((p) => {
-                          const item = p as Record<string, string>;
-                          return item.name ? `${item.name}(${item.location || "?"})` : "?";
-                        })}
-                        mono
-                      />
-                    </TableCell>
-                    <TableCell className="w-8 pl-0">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => openDelete([a.id])}
-                        aria-label={`删除资产 ${a.url || a.id}`}
-                      >
-                        <Trash2Icon className="size-3.5" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
+                {slice(tabData("service")).map((a) => (
+                  <ServiceRow
+                    key={a.id}
+                    a={a}
+                    selected={selected}
+                    onToggle={toggleSelect}
+                    onDelete={openDelete}
+                    onSaved={refresh}
+                  />
                 ))}
               </AssetCard>
             </div>
@@ -638,7 +631,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
-                cols={["", "服务", "URL", "IP", "端口", "状态码", "标题", "指纹", "认证", ""]}
+                cols={["", "服务", "URL", "IP", "端口", "状态码", "标题", "指纹", "认证", "标签", ""]}
                 loaded={loaded}
                 total={total}
                 page={page}
@@ -658,6 +651,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                     selected={selected}
                     onToggle={toggleSelect}
                     onDelete={openDelete}
+                    onSaved={refresh}
                   />
                 ))}
               </AssetCard>
@@ -717,7 +711,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                   />
                   <span className="text-sm leading-snug">
                     同时删除该企业下的所有资产
-                    <span className="block text-xs text-muted-foreground">不勾选则保留资产，仅取消归属关系</span>
+                    <span className="block text-muted-foreground text-xs">不勾选则保留资产，仅取消归属关系</span>
                   </span>
                 </label>
               </div>
@@ -1032,12 +1026,14 @@ function ServiceRow({
   selected,
   onToggle,
   onDelete,
+  onSaved,
 }: {
   a: Asset;
   showURL?: boolean;
   selected: Set<number>;
   onToggle: (id: number) => void;
   onDelete: (ids: number[]) => void;
+  onSaved: () => void;
 }) {
   const isHttp = a.service_type === "http";
   const svc = a.service_name || (isHttp ? "http" : "") || a.service_type || "";
@@ -1070,7 +1066,7 @@ function ServiceRow({
       <TableCell className="font-mono text-xs tabular-nums">{a.port || "—"}</TableCell>
       <TableCell>
         {a.status_code != null ? (
-          <span className={cn("font-mono text-xs font-semibold tabular-nums", statusTone(a.status_code))}>
+          <span className={cn("font-mono font-semibold text-xs tabular-nums", statusTone(a.status_code))}>
             {a.status_code}
           </span>
         ) : (
@@ -1085,7 +1081,7 @@ function ServiceRow({
       </TableCell>
       <TableCell>
         {(a.auth ?? []).length === 0 ? (
-          <span className="text-xs text-muted-foreground">—</span>
+          <span className="text-muted-foreground text-xs">—</span>
         ) : (
           (a.auth ?? []).map((authItem, i) => {
             const item = authItem as Record<string, string>;
@@ -1099,7 +1095,11 @@ function ServiceRow({
           })
         )}
       </TableCell>
+      <TableCell>
+        <TagsCell tags={a.tags} />
+      </TableCell>
       <TableCell className="w-8 pl-0">
+        <EditAssetButton a={a} onSaved={onSaved} />
         <Button
           variant="ghost"
           size="icon"
@@ -1113,3 +1113,312 @@ function ServiceRow({
     </TableRow>
   );
 }
+
+// TagsCell 展示资产上的标签。标签是自由文本，没有颜色时用中性描边。
+function TagsCell({ tags }: { tags?: string[] }) {
+  const list = (tags ?? []).filter(Boolean);
+  if (list.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {list.map((t) => (
+        <Badge key={t} variant="outline" className="text-[10px]">
+          {t}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+// EditAssetButton 打开单条资产的编辑弹窗。字段按资产类型裁剪：改一条 IP 记录时
+// 不该看到 URL 输入框。
+function EditAssetButton({ a, onSaved }: { a: Asset; onSaved: () => void }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7 text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen(true)}
+        aria-label={`编辑资产 ${a.domain || a.ip || a.url || a.id}`}
+      >
+        <PencilIcon className="size-3.5" />
+      </Button>
+      <AssetEditDialog a={a} open={open} onOpenChange={setOpen} onSaved={onSaved} />
+    </>
+  );
+}
+
+// 各类型可编辑的文本字段。键同时是 db.AssetPatch 的 JSON 名。
+const EDIT_FIELDS: Record<string, { key: string; label: string; placeholder?: string }[]> = {
+  root_domain: [
+    { key: "domain", label: "域名" },
+    { key: "icp", label: "ICP 备案", placeholder: "如 京ICP备12345678号" },
+  ],
+  subdomain: [
+    { key: "domain", label: "域名" },
+    { key: "record_type", label: "解析类型", placeholder: "A / AAAA / CNAME / MX" },
+  ],
+  ip: [{ key: "ip", label: "IP 地址" }],
+  app: [
+    { key: "app_name", label: "应用名" },
+    { key: "bundle_id", label: "Bundle ID" },
+    { key: "category", label: "分类" },
+    { key: "app_icp", label: "ICP 备案" },
+  ],
+  service: [
+    { key: "url", label: "URL" },
+    { key: "service_name", label: "服务名" },
+    { key: "page_title", label: "页面标题" },
+  ],
+};
+
+function AssetEditDialog({
+  a,
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  a: Asset;
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onSaved: () => void;
+}) {
+  const fields = EDIT_FIELDS[a.type] ?? EDIT_FIELDS.service;
+  const [values, setValues] = React.useState<Record<string, string>>({});
+  const [tagsText, setTagsText] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [knownTags, setKnownTags] = React.useState<string[]>([]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const init: Record<string, string> = {};
+    for (const f of fields) {
+      const v = (a as unknown as Record<string, unknown>)[f.key];
+      init[f.key] = v == null ? "" : String(v);
+    }
+    setValues(init);
+    setTagsText((a.tags ?? []).join(", "));
+    // 拉一次已有标签，给输入框做候选提示（失败不影响编辑）
+    api
+      .tags()
+      .then((ts) => setKnownTags(ts.map((t) => t.name)))
+      .catch(() => setKnownTags([]));
+  }, [open, a, fields]);
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const patch: Record<string, unknown> = {};
+      for (const f of fields) {
+        const cur = values[f.key] ?? "";
+        const orig = (a as unknown as Record<string, unknown>)[f.key];
+        const origStr = orig == null ? "" : String(orig);
+        // 只提交真正改动过的字段：部分更新语义下，无谓的字段覆盖会误改并发编辑。
+        if (cur !== origStr) patch[f.key] = cur;
+      }
+      const tags = tagsText
+        .split(/[,，]/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const origTags = a.tags ?? [];
+      if (tags.join("\u0000") !== origTags.join("\u0000")) patch.tags = tags;
+
+      if (Object.keys(patch).length === 0) {
+        toast.info("没有改动");
+        onOpenChange(false);
+        return;
+      }
+      await api.patchAsset(a.id, patch as Partial<Asset>);
+      toast.success("已保存");
+      onOpenChange(false);
+      onSaved();
+    } catch (e) {
+      toast.error(`保存失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>编辑资产</DialogTitle>
+          <DialogDescription>只提交改动过的字段。标签用逗号分隔。</DialogDescription>
+        </DialogHeader>
+        <FieldGroup className="py-2">
+          {fields.map((f) => (
+            <Field key={f.key}>
+              <FieldLabel htmlFor={`ae-${f.key}`}>{f.label}</FieldLabel>
+              <Input
+                id={`ae-${f.key}`}
+                value={values[f.key] ?? ""}
+                placeholder={f.placeholder}
+                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              />
+            </Field>
+          ))}
+          <Field>
+            <FieldLabel htmlFor="ae-tags">标签</FieldLabel>
+            <Input
+              id="ae-tags"
+              value={tagsText}
+              placeholder="逗号分隔，如 核心系统, 待复测"
+              onChange={(e) => setTagsText(e.target.value)}
+            />
+            {knownTags.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {knownTags.slice(0, 12).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+                    onClick={() => {
+                      const cur = tagsText
+                        .split(/[,，]/)
+                        .map((x) => x.trim())
+                        .filter(Boolean);
+                      if (!cur.includes(t)) setTagsText([...cur, t].join(", "));
+                    }}
+                  >
+                    + {t}
+                  </button>
+                ))}
+              </div>
+            )}
+          </Field>
+        </FieldGroup>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            取消
+          </Button>
+          <Button onClick={() => void submit()} disabled={busy}>
+            {busy ? "保存中…" : "保存"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// CreateAssetButton 是人工新增资产的入口。只暴露当前视图对应的类型，避免在
+// 「公网IP」页里手滑建出一条域名记录。
+function CreateAssetButton({ view, onSaved }: { view: AssetView; onSaved: () => void }) {
+  const [open, setOpen] = React.useState(false);
+  const fields = CREATE_FIELDS[view.key] ?? CREATE_FIELDS.ip;
+  const [values, setValues] = React.useState<Record<string, string>>({});
+  const [tagsText, setTagsText] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const init: Record<string, string> = {};
+    for (const f of fields) init[f.key] = "";
+    setValues(init);
+    setTagsText("");
+  }, [open, fields]);
+
+  const submit = async () => {
+    const required = fields.find((f) => f.required);
+    if (required && !(values[required.key] ?? "").trim()) {
+      toast.error(`${required.label}不能为空`);
+      return;
+    }
+    const payload: Record<string, unknown> = { type: view.dbType };
+    for (const f of fields) {
+      const v = (values[f.key] ?? "").trim();
+      if (v !== "") payload[f.key] = f.number ? Number(v) : v;
+    }
+    const tags = tagsText
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (tags.length > 0) payload.tags = tags;
+
+    setBusy(true);
+    try {
+      const res = await api.insertAssets([payload]);
+      if (res.errors?.length) {
+        toast.error(`新增失败：${res.errors[0].error}`);
+        return;
+      }
+      toast.success("已新增");
+      setOpen(false);
+      onSaved();
+    } catch (e) {
+      toast.error(`新增失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Button size="sm" onClick={() => setOpen(true)}>
+        <PlusIcon className="size-3.5" /> 新增
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>新增{view.title}</DialogTitle>
+            <DialogDescription>手工登记一条记录。必填项标有 *。</DialogDescription>
+          </DialogHeader>
+          <FieldGroup className="py-2">
+            {fields.map((f) => (
+              <Field key={f.key}>
+                <FieldLabel htmlFor={`ca-${f.key}`}>
+                  {f.label}
+                  {f.required ? " *" : ""}
+                </FieldLabel>
+                <Input
+                  id={`ca-${f.key}`}
+                  value={values[f.key] ?? ""}
+                  placeholder={f.placeholder}
+                  onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                />
+              </Field>
+            ))}
+            <Field>
+              <FieldLabel htmlFor="ca-tags">标签</FieldLabel>
+              <Input
+                id="ca-tags"
+                value={tagsText}
+                placeholder="逗号分隔，如 核心系统, 待复测"
+                onChange={(e) => setTagsText(e.target.value)}
+              />
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>
+              取消
+            </Button>
+            <Button onClick={() => void submit()} disabled={busy}>
+              {busy ? "保存中…" : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// 各视图新增时需要的字段。type 由 view.dbType 决定，不在这里重复。
+const CREATE_FIELDS: Record<
+  string,
+  { key: string; label: string; required?: boolean; placeholder?: string; number?: boolean }[]
+> = {
+  root_domain: [{ key: "domain", label: "域名", required: true, placeholder: "example.com" }],
+  subdomain: [
+    { key: "domain", label: "域名", required: true, placeholder: "api.example.com" },
+    { key: "record_type", label: "解析类型", placeholder: "A / CNAME" },
+  ],
+  ip: [{ key: "ip", label: "IP 地址", required: true, placeholder: "203.0.113.10" }],
+  app: [{ key: "app_name", label: "应用名", required: true }],
+  service: [
+    { key: "url", label: "URL（HTTP 服务）", placeholder: "https://example.com" },
+    { key: "service_name", label: "服务名（非 HTTP 服务）", placeholder: "ssh / mysql" },
+    { key: "port", label: "端口（非 HTTP 服务）", placeholder: "22", number: true },
+  ],
+  web: [{ key: "url", label: "URL", required: true, placeholder: "https://example.com" }],
+};

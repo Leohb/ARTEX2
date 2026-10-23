@@ -33,7 +33,7 @@ export function MethodBadge({ method }: { method: string }) {
   return (
     <span
       className={cn(
-        "inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none",
+        "inline-block rounded px-1.5 py-0.5 font-mono font-semibold text-[10px] leading-none",
         METHOD_COLOR[m] ?? "bg-muted text-muted-foreground",
       )}
     >
@@ -52,7 +52,7 @@ export function statusTone(code: number) {
 
 export function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
   const clean = items.filter(Boolean);
-  if (clean.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
+  if (clean.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
   return (
     <div className="flex flex-wrap gap-1">
       {clean.map((s, i) => (
@@ -104,7 +104,7 @@ export function AssetCard({
 
   return (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden py-0">
-      <div className="min-h-0 flex-1 overflow-auto scrollbar-thin scrollbar-track-transparent">
+      <div className="scrollbar-thin scrollbar-track-transparent min-h-0 flex-1 overflow-auto">
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-card">
             <TableRow>
@@ -127,7 +127,7 @@ export function AssetCard({
               childRows
             ) : (
               <TableRow>
-                <TableCell colSpan={cols.length} className="py-12 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={cols.length} className="py-12 text-center text-muted-foreground text-sm">
                   {loaded ? (emptyHint ?? "暂无数据。") : "加载中…"}
                 </TableCell>
               </TableRow>
@@ -136,7 +136,7 @@ export function AssetCard({
         </Table>
       </div>
       {total > 0 && (
-        <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-muted-foreground text-xs">
           <Select value={String(size)} onValueChange={(v) => onSize(Number(v))}>
             <SelectTrigger size="sm" className="h-7 w-24">
               <SelectValue />
@@ -207,8 +207,8 @@ export function DeleteCell({ onDelete, label }: { onDelete: () => void; label: s
 export function PlaceholderCard({ title, reason }: { title: string; reason: string }) {
   return (
     <Card className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 py-16 text-center">
-      <div className="text-sm font-medium">{title}尚未接入</div>
-      <p className="max-w-md text-xs leading-relaxed text-muted-foreground">{reason}</p>
+      <div className="font-medium text-sm">{title}尚未接入</div>
+      <p className="max-w-md text-muted-foreground text-xs leading-relaxed">{reason}</p>
     </Card>
   );
 }

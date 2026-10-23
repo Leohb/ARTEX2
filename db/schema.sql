@@ -112,6 +112,25 @@ DROP TRIGGER IF EXISTS trg_av2_upd ON assets;
 CREATE TRIGGER trg_av2_upd BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- 自定义标签。tags 存标签名数组（不是 id）：标签删了资产上的历史名字不会变成
+-- 一堆悬空 id，改名也能靠 UPDATE 批量重写；代价是改名要同步两张表（在
+-- db.RenameTag 里做）。
+CREATE TABLE IF NOT EXISTS tags (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    color       TEXT,
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS tags TEXT[];
+UPDATE assets SET tags = '{}' WHERE tags IS NULL;
+ALTER TABLE assets ALTER COLUMN tags SET DEFAULT '{}';
+ALTER TABLE assets ALTER COLUMN tags SET NOT NULL;
+-- GIN 让「按标签筛选」与「包含任一标签」走索引，而不是全表扫。
+CREATE INDEX IF NOT EXISTS idx_av2_tags ON assets USING GIN(tags);
+
 CREATE TABLE IF NOT EXISTS company_scope (
     id         BIGSERIAL PRIMARY KEY,
     company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
