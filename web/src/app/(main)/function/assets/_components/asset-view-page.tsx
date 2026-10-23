@@ -50,10 +50,13 @@ import { cn } from "@/lib/utils";
 
 import { AssetCard, Chips, PlaceholderCard, statusTone } from "./asset-table";
 import { type AssetView, assetViewIcon } from "./asset-views";
+import { WebAssetsPanel } from "./web-assets-panel";
 
 export default function AssetsPage({ view }: { view: AssetView }) {
   const isCompany = view.key === "company";
   const isPlaceholder = view.dbType === null && !isCompany;
+  // 用哪种表格渲染（DMZIP 复用 ip 表格）。默认与 view.key 相同。
+  const renderKey = view.renderAs ?? view.key;
   const ViewIcon = assetViewIcon(view.key);
   // 视图由 URL 决定，不再有页内 Tab。tab 保留为 view.key，让下面已有的取数/
   // 分页/企业分支尽量少改。
@@ -209,14 +212,14 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           : await api.assets(view.dbType ?? "", size, offset);
         if (assetsRequestRef.current !== request) return;
         setRows(r.assets);
-        setRowsTab(view.key);
+        setRowsTab(renderKey);
         setTotal(r.total);
         setDslError("");
       } catch (e) {
         if (assetsRequestRef.current !== request) return;
         setDslError(String((e as Error)?.message ?? e));
         setRows([]);
-        setRowsTab(view.key);
+        setRowsTab(renderKey);
         setTotal(0);
       } finally {
         if (assetsRequestRef.current === request) {
@@ -230,7 +233,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
       clearTimeout(tid);
       if (assetsRequestRef.current === request) assetsRequestRef.current++;
     };
-  }, [view.key, view.dbType, view.dsl, page, size, query, refreshKey, isCompany, isPlaceholder]);
+  }, [view.key, view.dbType, view.dsl, renderKey, page, size, query, refreshKey, isCompany, isPlaceholder]);
 
   React.useEffect(() => {
     if (isCompany || isPlaceholder) return;
@@ -253,7 +256,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
 
   // rows are already the current server-side page.
   const tabData = (type: string): Asset[] => (rowsTab === type ? rows : []);
-  const currentRows = tabData(tab);
+  const currentRows = tabData(renderKey);
   const slice = <T,>(list: T[]) => list;
 
   const searchBox = (
@@ -373,7 +376,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           )}
 
           {/* 主域名 */}
-          {view.key === "root_domain" && (
+          {renderKey === "root_domain" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
@@ -420,7 +423,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           )}
 
           {/* 公网IP */}
-          {view.key === "ip" && (
+          {renderKey === "ip" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
@@ -473,7 +476,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           )}
 
           {/* 子域名 */}
-          {view.key === "subdomain" && (
+          {renderKey === "subdomain" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
@@ -521,7 +524,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           )}
 
           {/* 应用清单 */}
-          {view.key === "app" && (
+          {renderKey === "app" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
@@ -567,7 +570,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           )}
 
           {/* 公网服务 */}
-          {view.key === "service" && (
+          {renderKey === "service" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
@@ -597,7 +600,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           )}
 
           {/* NAT 映射 */}
-          {view.key === "nat" && (
+          {renderKey === "nat" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
@@ -645,7 +648,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
           )}
 
           {/* 主机资产 */}
-          {view.key === "host" && (
+          {renderKey === "host" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
               <AssetCard
@@ -694,37 +697,8 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             </div>
           )}
 
-          {/* WEB 资产：复用「公网服务」的行渲染，仅把域名列换成完整 URL */}
-          {view.key === "web" && (
-            <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
-              {searchBox}
-              <AssetCard
-                cols={["", "服务", "URL", "IP", "端口", "状态码", "标题", "指纹", "认证", "标签", ""]}
-                loaded={loaded}
-                total={total}
-                page={page}
-                size={size}
-                onSize={setSize}
-                onPage={setPage}
-                rows={currentRows}
-                selected={selected}
-                onToggleAll={(ids) => toggleSelectAll(ids)}
-                emptyHint="暂无 WEB 资产（HTTP 协议的公网服务）。"
-              >
-                {slice(tabData("web")).map((a) => (
-                  <ServiceRow
-                    key={a.id}
-                    a={a}
-                    showURL
-                    selected={selected}
-                    onToggle={toggleSelect}
-                    onDelete={openDelete}
-                    onSaved={refresh}
-                  />
-                ))}
-              </AssetCard>
-            </div>
-          )}
+          {/* WEB 资产按域名聚合，单独成组件（分页必须作用在域名上） */}
+          {renderKey === "web" && <WebAssetsPanel />}
         </div>
       )}
 

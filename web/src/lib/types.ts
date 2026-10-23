@@ -325,6 +325,30 @@ export interface AssetTreeNode {
   children?: AssetTreeNode[];
 }
 
+/** WEB 资产列表的一行：按域名聚合的暴露面统计。 */
+export interface WebAssetSummary {
+  domain: string;
+  service_count: number;
+  endpoint_count: number;
+  finding_count: number;
+  ips: string[];
+  titles: string[];
+  status_codes: number[];
+  technologies: string[];
+  tags: string[];
+  last_seen: string;
+}
+
+/** 单个 WEB 资产（一个域名）的完整暴露面。 */
+export interface WebAssetDetail {
+  domain: string;
+  services: Asset[];
+  endpoints: Asset[];
+  findings: { id: number; name: string; severity: string; status: string; asset_id: number }[];
+  ips: { id: number; type: string; label: string }[];
+  hosts: { id: number; type: string; label: string }[];
+}
+
 /** 自定义标签定义（/api/tags）。资产上存的是标签名，不是 id。 */
 export interface Tag {
   id: number;

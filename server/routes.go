@@ -106,6 +106,10 @@ func (s *Server) Handler() http.Handler {
 	// 资产树/关系必须注册在 /api/assets/{id} 之前？Go 1.22 mux 按字面量优先，
 	// 字面量段更长者胜，所以 /tree、/relations 不会被 {id} 吞掉（已实测）。
 	mux.HandleFunc("GET /api/assets/tree", s.assetTree)
+	// 放在 /api/assets/ 之外的独立前缀：/api/assets/web/{domain} 会与
+	// /api/assets/{id}/relations 冲突（Go mux 认为 web 也可能是 {id}）。
+	mux.HandleFunc("GET /api/web-assets", s.listWebAssets)
+	mux.HandleFunc("GET /api/web-assets/{domain}", s.getWebAsset)
 	mux.HandleFunc("GET /api/assets/{id}", s.getAsset)
 	mux.HandleFunc("PATCH /api/assets/{id}", s.patchAsset)
 	mux.HandleFunc("GET /api/assets/{id}/relations", s.assetRelations)

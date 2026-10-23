@@ -46,6 +46,14 @@ export interface AssetView {
   dsl?: string;
   /** 占位页说明；仅在 dbType 为 null 时使用。 */
   placeholderReason?: string;
+  /**
+   * 用哪种表格渲染。默认等于 key。
+   *
+   * 需要它是因为「取什么数据」与「怎么展示」不一定一一对应：DMZIP 取的是
+   * ip 数据（dbType=ip + ip_scope==dmz），但 view.key 是 dmzip，若直接用
+   * key 匹配渲染分支就找不到表格——这正是 DMZIP 页空白的原因。
+   */
+  renderAs?: AssetViewKey;
 }
 
 export const ASSET_VIEWS: Record<AssetViewKey, AssetView> = {
@@ -69,7 +77,7 @@ export const ASSET_VIEWS: Record<AssetViewKey, AssetView> = {
   app: { key: "app", title: "应用清单", dbType: "app" },
   nat: { key: "nat", title: "NAT映射", dbType: "nat" },
   // DMZ 是组织概念，地址上看不出来，因此靠人工标注的 ip_scope 过滤。
-  dmzip: { key: "dmzip", title: "DMZIP", dbType: "ip", dsl: "ip_scope==dmz" },
+  dmzip: { key: "dmzip", title: "DMZIP", dbType: "ip", dsl: "ip_scope==dmz", renderAs: "ip" },
   host: { key: "host", title: "主机资产", dbType: "host" },
 };
 

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -662,4 +663,232 @@ func (s *AssetStore) findSubdomainByDomain(domain string) int64 {
 		return 0
 	}
 	return id
+}
+
+// =====================================================================
+// WEB 资产（按域名聚合）
+// =====================================================================
+//
+// 列表按域名聚合，分页作用在域名上。若按 service 行分页再前端 group by，
+// 同一域名会被拆到不同页，用户只能看到半截。
+
+// WebAssetSummary 是列表的一行：一个域名的暴露面统计。
+type WebAssetSummary struct {
+	Domain        string   `json:"domain"`
+	ServiceCount  int      `json:"service_count"`
+	EndpointCount int      `json:"endpoint_count"`
+	FindingCount  int      `json:"finding_count"`
+	IPs           []string `json:"ips"`
+	Titles        []string `json:"titles"`
+	StatusCodes   []int    `json:"status_codes"`
+	Technologies  []string `json:"technologies"`
+	Tags          []string `json:"tags"`
+	LastSeen      string   `json:"last_seen"`
+}
+
+// ListWebAssets 按域名聚合 HTTP 服务，返回分页结果与域名总数。
+func (s *AssetStore) ListWebAssets(limit, offset int) ([]*WebAssetSummary, int, error) {
+	var total int
+	if err := s.db.QueryRow(`
+		SELECT count(DISTINCT domain) FROM assets
+		WHERE type='service' AND service_type='http'
+		  AND domain IS NOT NULL AND domain <> ''`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count web assets: %w", err)
+	}
+	if offset >= total {
+		return []*WebAssetSummary{}, total, nil
+	}
+
+	rows, err := s.db.Query(`
+		WITH agg AS (
+			SELECT a.domain,
+			       count(*)                                  AS service_count,
+			       array_remove(array_agg(DISTINCT NULLIF(a.ip,'')), NULL) AS ips,
+			       array_remove(array_agg(DISTINCT NULLIF(a.page_title,'')), NULL) AS titles,
+			       array_agg(DISTINCT status_code) FILTER (WHERE status_code IS NOT NULL) AS codes,
+			       max(last_seen)                            AS last_seen
+			FROM assets a
+			WHERE type='service' AND service_type='http' AND a.domain IS NOT NULL AND a.domain <> ''
+			GROUP BY domain
+		),
+		eps AS (
+			SELECT domain, count(*) AS endpoint_count
+			FROM assets WHERE type='endpoint' AND domain IS NOT NULL AND domain <> ''
+			GROUP BY domain
+		),
+		tech AS (
+			SELECT domain, array_remove(array_agg(DISTINCT t), NULL) AS technologies
+			FROM assets a, unnest(a.technologies) AS t
+			WHERE a.type='service' AND a.service_type='http' AND a.domain IS NOT NULL
+			GROUP BY domain
+		),
+		-- service.ip 常常为空（HTTP 探测只拿到 URL），所以 IP 列同时并上
+		-- 「该域名的子域解析到的 IP」。独立成 CTE 而不是相关子查询：GROUP BY
+		-- 之后原始列不可引用，而相关子查询里也不能对聚合键求值。
+		resolved AS (
+			SELECT sd.domain AS domain,
+			       array_remove(array_agg(DISTINCT i.ip), NULL) AS ips
+			FROM assets sd
+			JOIN asset_edges e ON e.src_id = sd.id AND e.kind = 'resolves_to'
+			JOIN assets i ON i.id = e.dst_id
+			WHERE sd.type='subdomain' AND sd.domain IS NOT NULL AND sd.domain <> ''
+			GROUP BY sd.domain
+		),
+		tg AS (
+			SELECT domain, array_remove(array_agg(DISTINCT t), NULL) AS tags
+			FROM assets a, unnest(a.tags) AS t
+			WHERE a.type IN ('service','endpoint') AND a.domain IS NOT NULL
+			GROUP BY domain
+		)
+		SELECT agg.domain, agg.service_count, COALESCE(eps.endpoint_count,0),
+		       COALESCE(array_length(agg.ips,1),0),
+		       -- 并集而不是 COALESCE：service.ip 与子域解析 IP 各有各的来源，
+		       -- 取第一个非空会在「service 没 IP、子域有 IP」时把后者丢掉。
+		       -- 数组列必须走 array_to_json：Postgres 的数组文本格式是 {a,b}，
+		       -- 不是 JSON 的 ["a","b"]，直接 json.Unmarshal 会失败并静默留下空切片。
+		       array_to_json(ARRAY(SELECT DISTINCT x FROM unnest(COALESCE(resolved.ips,'{}') || COALESCE(agg.ips,'{}')) AS x WHERE x IS NOT NULL AND x <> ''))::text AS ips,
+		       array_to_json(agg.titles)::text, array_to_json(agg.codes)::text,
+		       array_to_json(COALESCE(tech.technologies, '{}'))::text, array_to_json(COALESCE(tg.tags, '{}'))::text,
+		       agg.last_seen::text
+		FROM agg
+		LEFT JOIN eps  ON eps.domain  = agg.domain
+		LEFT JOIN tech ON tech.domain = agg.domain
+		LEFT JOIN tg   ON tg.domain   = agg.domain
+		LEFT JOIN resolved ON resolved.domain = agg.domain
+		ORDER BY agg.last_seen DESC, agg.domain
+		LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list web assets: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*WebAssetSummary{}
+	for rows.Next() {
+		var w WebAssetSummary
+		var ips, titles, techs, tags []byte
+		var codes []byte
+		if err := rows.Scan(&w.Domain, &w.ServiceCount, &w.EndpointCount, new(int),
+			&ips, &titles, &codes, &techs, &tags, &w.LastSeen); err != nil {
+			return nil, 0, err
+		}
+		// 空数组统一成 []，避免前端拿到 null 还要判空。
+		w.IPs, w.Titles, w.StatusCodes, w.Technologies, w.Tags = []string{}, []string{}, []int{}, []string{}, []string{}
+		_ = json.Unmarshal(ips, &w.IPs)
+		_ = json.Unmarshal(titles, &w.Titles)
+		_ = json.Unmarshal(codes, &w.StatusCodes)
+		_ = json.Unmarshal(techs, &w.Technologies)
+		_ = json.Unmarshal(tags, &w.Tags)
+		out = append(out, &w)
+	}
+	return out, total, rows.Err()
+}
+
+// WebAssetDetail 是单个 WEB 资产（一个域名）的完整暴露面。
+type WebAssetDetail struct {
+	Domain    string            `json:"domain"`
+	Services  []*Asset          `json:"services"`
+	Endpoints []*Asset          `json:"endpoints"`
+	Findings  []WebAssetFinding `json:"findings"`
+	IPs       []*GraphNodeRef   `json:"ips"`
+	Hosts     []*GraphNodeRef   `json:"hosts"`
+}
+
+// WebAssetFinding 是与该域名相关的漏洞摘要。
+type WebAssetFinding struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Severity string `json:"severity"`
+	Status   string `json:"status"`
+	AssetID  int64  `json:"asset_id"`
+}
+
+// WebAssetDetail 取一个域名下的服务、接口、关联漏洞，以及解析到的 IP / 主机。
+func (s *AssetStore) WebAssetDetail(domain string) (*WebAssetDetail, error) {
+	d := &WebAssetDetail{Domain: domain, Services: []*Asset{}, Endpoints: []*Asset{}, Findings: []WebAssetFinding{}, IPs: []*GraphNodeRef{}, Hosts: []*GraphNodeRef{}}
+
+	// 服务与接口
+	for _, q := range []struct {
+		sql  string
+		dest *[]*Asset
+	}{
+		{assetSelectCols + ` WHERE type='service' AND service_type='http' AND domain=$1 ORDER BY url`, &d.Services},
+		{assetSelectCols + ` WHERE type='endpoint' AND domain=$1 ORDER BY url, method`, &d.Endpoints},
+	} {
+		rows, err := s.db.Query(q.sql, domain)
+		if err != nil {
+			return nil, fmt.Errorf("web asset detail: %w", err)
+		}
+		assets, err := scanAssets(rows)
+		rows.Close()
+		if err != nil {
+			return nil, fmt.Errorf("web asset detail: %w", err)
+		}
+		*q.dest = assets
+	}
+	if len(d.Services) == 0 && len(d.Endpoints) == 0 {
+		return nil, ErrAssetNotFound
+	}
+
+	// 关联漏洞：findings.asset_ids 是 JSONB 数组，用 @> 反查。
+	ids := make([]int64, 0, len(d.Services)+len(d.Endpoints))
+	for _, a := range d.Services {
+		ids = append(ids, a.ID)
+	}
+	for _, a := range d.Endpoints {
+		ids = append(ids, a.ID)
+	}
+	if len(ids) > 0 {
+		rows, err := s.db.Query(`
+			SELECT f.id, COALESCE(NULLIF(f.name,''), f.vulnclass), f.severity, f.status,
+			       COALESCE((f.asset_ids->>0)::bigint, 0)
+			FROM findings f
+			WHERE EXISTS (
+				SELECT 1 FROM jsonb_array_elements_text(f.asset_ids) AS aid
+				WHERE aid::bigint = ANY($1::bigint[])
+			)
+			ORDER BY f.created_at DESC`, ids)
+		if err == nil {
+			for rows.Next() {
+				var f WebAssetFinding
+				if err := rows.Scan(&f.ID, &f.Name, &f.Severity, &f.Status, &f.AssetID); err == nil {
+					d.Findings = append(d.Findings, f)
+				}
+			}
+			rows.Close()
+		}
+	}
+
+	// 解析到的 IP（子域 → IP）与 IP 上的主机。
+	ipRows, err := s.db.Query(`
+		SELECT DISTINCT i.id, i.type, COALESCE(NULLIF(i.ip,''), i.type||'#'||i.id::text)
+		FROM assets sd
+		JOIN asset_edges e ON e.src_id = sd.id AND e.kind = 'resolves_to'
+		JOIN assets i ON i.id = e.dst_id
+		WHERE sd.type='subdomain' AND sd.domain = $1`, domain)
+	if err == nil {
+		for ipRows.Next() {
+			r := &GraphNodeRef{}
+			if err := ipRows.Scan(&r.ID, &r.Type, &r.Label); err == nil {
+				d.IPs = append(d.IPs, r)
+			}
+		}
+		ipRows.Close()
+	}
+	for _, ip := range d.IPs {
+		hRows, err := s.db.Query(`
+			SELECT DISTINCT h.id, h.type, COALESCE(NULLIF(h.hostname,''), h.type||'#'||h.id::text)
+			FROM asset_edges e JOIN assets h ON h.id = e.src_id
+			WHERE e.dst_id = $1 AND e.kind = 'runs_on' AND h.type = 'host'`, ip.ID)
+		if err != nil {
+			continue
+		}
+		for hRows.Next() {
+			r := &GraphNodeRef{}
+			if err := hRows.Scan(&r.ID, &r.Type, &r.Label); err == nil {
+				d.Hosts = append(d.Hosts, r)
+			}
+		}
+		hRows.Close()
+	}
+	return d, nil
 }

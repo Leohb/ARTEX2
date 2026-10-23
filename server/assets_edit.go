@@ -308,3 +308,64 @@ func (s *Server) setAssetIPScope(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "ip_scope": req.Scope})
 }
+
+// =====================================================================
+// WEB 资产（按域名聚合）
+// =====================================================================
+//
+// 一个域名上通常跑多个服务、每个服务下多个接口。列表页按「域名」聚合，一行
+// 代表一个 WEB 资产的暴露面，点进去再看这个域名下的全部 URL、接口与漏洞。
+//
+// 之所以在服务端聚合而不是前端分组：分页必须作用在域名上。若按 service 行
+// 分页再在前端 group by domain，同一域名会被拆到不同页，用户看到半截。
+
+// GET /api/assets/web?limit=&offset=
+func (s *Server) listWebAssets(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, total, err := as.ListWebAssets(limit, offset)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"assets": rows, "total": total})
+}
+
+// GET /api/assets/web/{domain} — 单个 WEB 资产的完整暴露面。
+func (s *Server) getWebAsset(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	domain := strings.TrimSpace(r.PathValue("domain"))
+	if domain == "" {
+		writeErr(w, 400, "domain required")
+		return
+	}
+	detail, err := as.WebAssetDetail(domain)
+	if err != nil {
+		if errors.Is(err, db.ErrAssetNotFound) {
+			writeErr(w, 404, "该域名下没有 WEB 资产")
+			return
+		}
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, detail)
+}

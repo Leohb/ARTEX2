@@ -89,6 +89,8 @@ import type {
   SSSyncRun,
   SSTask,
   Stats,
+  WebAssetDetail,
+  WebAssetSummary,
   Tag,
   Task,
   TaskArchive,
@@ -545,6 +547,13 @@ export const api = {
     return get<{ roots: AssetTreeNode[] }>(`/assets/tree?${qs.toString()}`).then((r) => r?.roots ?? []);
   },
   assetRelations: (id: number) => get<AssetRelations>(`/assets/${id}/relations`),
+  // WEB 资产按域名聚合：列表一行一个域名，详情给出该域名下的全部 URL 与关联资源。
+  webAssets: (limit = 50, offset = 0) =>
+    get<{ assets: WebAssetSummary[]; total: number }>(`/web-assets?limit=${limit}&offset=${offset}`).then((r) => ({
+      assets: r?.assets ?? [],
+      total: r?.total ?? 0,
+    })),
+  webAssetDetail: (domain: string) => get<WebAssetDetail>(`/web-assets/${encodeURIComponent(domain)}`),
   setAssetScope: (id: number, scope: string) =>
     http<{ ok: boolean }>(`/assets/${id}/scope`, { method: "PATCH", body: JSON.stringify({ ip_scope: scope }) }),
   // ---- 自定义标签 ----
