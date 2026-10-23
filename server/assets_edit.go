@@ -369,3 +369,22 @@ func (s *Server) getWebAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, detail)
 }
+
+// GET /api/assets/scope-counts — 按网络位置统计 IP 数量。
+//
+// 「公网IP」与「DMZIP」是两个独立视图，但底层都是 type=ip。前端不能用
+// /api/assets/counts 的 ip 总数给 DMZIP 页显示数量，否则会出现「标题写 2、
+// 表格只有 1 行」这种看起来像 bug 的统计冲突。
+func (s *Server) assetScopeCounts(w http.ResponseWriter, r *http.Request) {
+	as := s.assetStore()
+	if as == nil {
+		writeErr(w, 503, "database unavailable")
+		return
+	}
+	counts, err := as.CountsByIPScope()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, counts)
+}

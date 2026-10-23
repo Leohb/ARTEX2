@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	// asset system
 	mux.HandleFunc("GET /api/assets", s.listAssets)
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
+	mux.HandleFunc("GET /api/assets/scope-counts", s.assetScopeCounts)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
 	// 资产树/关系必须注册在 /api/assets/{id} 之前？Go 1.22 mux 按字面量优先，

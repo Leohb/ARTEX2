@@ -892,3 +892,36 @@ func (s *AssetStore) WebAssetDetail(domain string) (*WebAssetDetail, error) {
 	}
 	return d, nil
 }
+
+// CountsByIPScope 按网络位置统计 IP 资产数量。
+//
+// 「公网IP」和「DMZIP」是两个独立视图，但底层都是 type=ip。若两者都拿
+// /api/assets/counts 的 ip 总数，DMZIP 页会显示全部 IP 的数量而表格里只有
+// DMZ 那几条，看起来像统计错了。所以单独给一个按 ip_scope 聚合的口径。
+func (s *AssetStore) CountsByIPScope() (map[string]int, error) {
+	rows, err := s.db.Query(`
+		SELECT COALESCE(NULLIF(ip_scope,''), 'unknown'), COUNT(*)
+		FROM assets WHERE type='ip'
+		GROUP BY 1`)
+	if err != nil {
+		return nil, fmt.Errorf("count by ip_scope: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var k string
+		var n int
+		if err := rows.Scan(&k, &n); err != nil {
+			return nil, err
+		}
+		out[k] = n
+	}
+	return out, rows.Err()
+}
+
+// CountPublicIPs 返回公网 IP 数量（不含 DMZ、内网、回环）。
+func (s *AssetStore) CountPublicIPs() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM assets WHERE type='ip' AND ip_scope='public'`).Scan(&n)
+	return n, err
+}

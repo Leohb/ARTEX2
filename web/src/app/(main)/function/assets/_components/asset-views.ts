@@ -60,7 +60,8 @@ export const ASSET_VIEWS: Record<AssetViewKey, AssetView> = {
   company: { key: "company", title: "企业", dbType: null }, // 走 /api/companies
   root_domain: { key: "root_domain", title: "主域名", dbType: "root_domain" },
   subdomain: { key: "subdomain", title: "子域名", dbType: "subdomain" },
-  ip: { key: "ip", title: "公网IP", dbType: "ip" },
+  // 公网IP 只列 ip_scope=public。DMZIP 是独立视图（见 dmzip），两者不混用。
+  ip: { key: "ip", title: "公网IP", dbType: "ip", dsl: "ip_scope==public" },
   service: { key: "service", title: "公网服务", dbType: "service" },
   web: {
     key: "web",
@@ -77,7 +78,7 @@ export const ASSET_VIEWS: Record<AssetViewKey, AssetView> = {
   app: { key: "app", title: "应用清单", dbType: "app" },
   nat: { key: "nat", title: "NAT映射", dbType: "nat" },
   // DMZ 是组织概念，地址上看不出来，因此靠人工标注的 ip_scope 过滤。
-  dmzip: { key: "dmzip", title: "DMZIP", dbType: "ip", dsl: "ip_scope==dmz", renderAs: "ip" },
+  dmzip: { key: "dmzip", title: "DMZIP", dbType: "ip", dsl: "ip_scope==dmz" },
   host: { key: "host", title: "主机资产", dbType: "host" },
 };
 

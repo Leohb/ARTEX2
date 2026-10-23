@@ -251,8 +251,23 @@ export default function AssetsPage({ view }: { view: AssetView }) {
 
   const tabCounts: Record<string, number> = { ...counts, company: companies.length };
   const totalAssets = Object.values(counts).reduce((a, b) => a + b, 0);
-  // 当前视图的条目数：企业看企业数，其余看该 type 的计数。
-  const headerCount = isCompany ? companies.length : view.dbType ? (tabCounts[view.dbType] ?? total) : 0;
+
+  // 当前视图的条目数。
+  //
+  // 带固定过滤条件（view.dsl）的视图必须用它自己的 total，不能用
+  // tabCounts[dbType]：公网IP 和 DMZIP 的 dbType 都是 ip，后者若拿 ip 总数
+  // 就会显示「标题 2、表格 1 行」，看起来像统计错了。
+  const headerCount = isCompany
+    ? companies.length
+    : view.dsl
+      ? total
+      : view.dbType
+        ? (tabCounts[view.dbType] ?? total)
+        : 0;
+
+  // 页头那句「共 N 项资产」：无过滤时是全局总数（帮助判断整体规模），
+  // 有过滤时改成当前视图的命中数，避免与标题徽标互相矛盾。
+  const headerTotalLabel = view.dsl ? headerCount : totalAssets;
 
   // rows are already the current server-side page.
   const tabData = (type: string): Asset[] => (rowsTab === type ? rows : []);
@@ -282,7 +297,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
         <div className="flex items-center gap-3">
           {!isPlaceholder && (
             <span className="text-muted-foreground text-sm">
-              共 <span className="tabular-nums">{totalAssets}</span> 项资产
+              共 <span className="tabular-nums">{headerTotalLabel}</span> 项{view.dsl ? view.title : "资产"}
             </span>
           )}
           {selected.size > 0 && (
@@ -422,7 +437,7 @@ export default function AssetsPage({ view }: { view: AssetView }) {
             </div>
           )}
 
-          {/* 公网IP */}
+          {/* 公网IP（只含 ip_scope=public；DMZ 见下面的独立表格） */}
           {renderKey === "ip" && (
             <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
               {searchBox}
@@ -445,6 +460,63 @@ export default function AssetsPage({ view }: { view: AssetView }) {
                     </TableCell>
                     <TableCell className="font-medium font-mono text-xs">{a.ip}</TableCell>
                     <TableCell className="font-mono text-xs">{a.c_segment || "—"}</TableCell>
+                    <TableCell>
+                      <Chips items={a.bound_domains ?? []} mono />
+                    </TableCell>
+                    <TableCell>
+                      <Chips
+                        items={(a.open_ports ?? []).map((p) => (p.service ? `${p.port}/${p.service}` : String(p.port)))}
+                        mono
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <TagsCell tags={a.tags} />
+                    </TableCell>
+                    <TableCell className="w-8 pl-0">
+                      <EditAssetButton a={a} onSaved={refresh} />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => openDelete([a.id])}
+                        aria-label={`删除资产 ${a.ip || a.id}`}
+                      >
+                        <Trash2Icon className="size-3.5" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </AssetCard>
+            </div>
+          )}
+
+          {/* DMZIP：与「公网IP」是两张独立表格，不共用渲染分支 */}
+          {renderKey === "dmzip" && (
+            <div className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
+              {searchBox}
+              <AssetCard
+                cols={["", "DMZ 地址", "C段", "承载主机", "绑定域名", "开放端口", "标签", ""]}
+                loaded={loaded}
+                total={total}
+                page={page}
+                size={size}
+                onSize={setSize}
+                onPage={setPage}
+                rows={currentRows}
+                selected={selected}
+                onToggleAll={(ids) => toggleSelectAll(ids)}
+                emptyHint="暂无 DMZ 地址。可在「公网IP」或「主机资产」页把某条 IP 的区域标注为 DMZ。"
+              >
+                {slice(tabData("dmzip")).map((a) => (
+                  <TableRow key={a.id} className={selected.has(a.id) ? "bg-muted/40" : undefined}>
+                    <TableCell className="w-8 pr-0">
+                      <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggleSelect(a.id)} />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs font-medium">{a.ip}</TableCell>
+                    <TableCell className="font-mono text-xs">{a.c_segment || "—"}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      <HostForIP ip={a.ip} />
+                    </TableCell>
                     <TableCell>
                       <Chips items={a.bound_domains ?? []} mono />
                     </TableCell>
@@ -1589,4 +1661,35 @@ function ScopeBadge({ scope }: { scope?: string }) {
       {label[scope] ?? scope}
     </Badge>
   );
+}
+
+// HostForIP 显示这个 DMZ 地址上承载的主机名。
+//
+// 数据来自资产图的 runs_on 边（主机 → IP）。这里按需查询而不是把主机名塞进
+// ip 资产的行里：一台机器可能换 IP，反向依赖关系以边为准更可靠。
+function HostForIP({ ip }: { ip?: string }) {
+  const [label, setLabel] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!ip) return;
+    let live = true;
+    // 列表行里只有 ip 文本、没有 ip 资产的 id，所以直接按 ip 搜主机列表。
+    api
+      .assets("host", 200, 0)
+      .then((r) => {
+        if (!live) return;
+        const hit = r.assets.find((h) => h.ip === ip);
+        setLabel(hit?.hostname ?? "");
+      })
+      .catch(() => {
+        if (live) setLabel("");
+      });
+    return () => {
+      live = false;
+    };
+  }, [ip]);
+
+  if (label === null) return <span className="text-muted-foreground">…</span>;
+  if (!label) return <span className="text-muted-foreground">—</span>;
+  return <span>{label}</span>;
 }
